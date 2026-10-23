@@ -85,6 +85,8 @@
                                          cumulative update on the stick is now recommended, not required
     1.2.0    2026-10-23  <Your name>     Belgian (Period) keyboard in WinPE instead of US (needs -RebuildWinPE
                                          on an existing workspace)
+    1.2.1    2026-10-23  <Your name>     Fix: step 5 crashed when dell.com refused the driver pack lookup
+                                         (OSD bug, empty fallback URL); discard leftover boot.wim mounts
 #>
 
 #Requires -Version 5.1
@@ -197,6 +199,40 @@ function Invoke-Installer {
 
 function Get-OSDCloudUsbVolume {
     @(Get-Volume | Where-Object { $_.FileSystemLabel -eq 'OSDCloudUSB' -and $_.DriveLetter })
+}
+
+function Dismount-WorkspaceBootWim {
+    # A failed Edit-OSDCloudWinPE can leave the workspace boot.wim mounted, which blocks the next run.
+    # Discard such a leftover mount: its changes were never completed.
+    $bootWim = Join-Path $WorkspacePath 'Media\sources\boot.wim'
+    $mounts  = @(Get-WindowsImage -Mounted | Where-Object { $_.ImagePath -eq $bootWim })
+    foreach ($mount in $mounts) {
+        Write-Warning "Discarding leftover mount of boot.wim at $($mount.Path) (from an earlier failed run)"
+        Dismount-WindowsImage -Path $mount.Path -Discard | Out-Null
+    }
+    if ($mounts.Count -gt 0) { Clear-WindowsCorruptMountPoint | Out-Null }
+}
+
+function Set-DellWinPEDriverPackFallback {
+    # Workaround for a bug in OSD 26.10.16.1: when dell.com refuses the scripted request (which
+    # happens often), Get-DellWinPEDriverPack falls back to resource key 'LastKnownGood11', but the
+    # key is named 'LastKnownGoodWin11'. The empty fallback makes Edit-OSDCloudWinPE crash with
+    # "Invalid URI: The hostname could not be parsed". We look up the current pack ourselves (a few
+    # tries) and store it under the key the module reads.
+    $dell = $Global:OSDModuleResource.WinPEDriverPack.Dell
+    if (-not $dell -or $dell.LastKnownGood11) { return }   # Nothing to fix (newer OSD version)
+    $url = $null
+    for ($attempt = 1; $attempt -le 3 -and -not $url; $attempt++) {
+        $url = Get-DellWinPEDriverPack -WarningAction SilentlyContinue
+        if (-not $url) { Start-Sleep -Seconds 5 }
+    }
+    if (-not $url) {
+        $url = $dell.LastKnownGoodWin11
+        Write-Warning "dell.com did not answer; using the Dell WinPE driver pack known to the OSD module: $url"
+    }
+    if (-not $url) { throw 'No Dell WinPE driver pack URL found. Try again later (dell.com may be refusing requests).' }
+    $dell['LastKnownGood11'] = $url
+    Write-Ok "Dell WinPE driver pack: $url"
 }
 
 function Test-UsbWinPEOutdated {
@@ -339,7 +375,15 @@ try {
         Write-Skip 'Network drivers already added to WinPE'
     }
     elseif ($PSCmdlet.ShouldProcess('WinPE boot.wim', 'Add cloud drivers (Edit-OSDCloudWinPE -CloudDriver *)')) {
-        Edit-OSDCloudWinPE -WorkspacePath $WorkspacePath -CloudDriver '*'
+        Dismount-WorkspaceBootWim
+        Set-DellWinPEDriverPackFallback
+        try {
+            Edit-OSDCloudWinPE -WorkspacePath $WorkspacePath -CloudDriver '*'
+        }
+        catch {
+            Dismount-WorkspaceBootWim
+            throw
+        }
         Set-Content -Path $WinPEMarkerFile -Value (Get-Date -Format s)
         $winPEChanged = $true
         Write-Ok 'Network drivers added to WinPE'
