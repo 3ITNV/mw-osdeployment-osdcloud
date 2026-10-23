@@ -19,15 +19,17 @@
              or update an existing one
           7. Download the Languages and Optional Features ISO, if not provided
           8. Fill the language repository on the stick (Prepare-OSDCloudLanguageRepo.ps1)
-          9. Copy the deployment script to the stick
+          9. Copy the deployment script and the Office folder (Microsoft 365 Apps) to the stick
 
-        Monthly maintenance: download the new cumulative update and re-run with -LcuPath.
-        Only the update on the stick is replaced; everything else is skipped.
+        Monthly maintenance (recommended, not required): download the new cumulative update and
+        re-run with -LcuPath. Only the update on the stick is replaced; everything else is skipped.
+        A missing or outdated update does not stop deployments, it only gives a warning.
 
-        Keep these three files in the same folder:
+        Keep these files in the same folder:
             Initialize-OSDCloudBuild.ps1
             Prepare-OSDCloudLanguageRepo.ps1
             Deploy-OSDCloud-Win11-25H2.ps1
+            Office\   (setup.exe, installM365BP.xml, Install-M365Apps.ps1)
 
     Author:  <Your name> - 3-IT
 
@@ -78,6 +80,8 @@
                                          update stick when its WinPE is older than the workspace
     1.0.3    2026-10-23  <Your name>     Fix: script stopped after step 6 (single USB volume was not
                                          counted correctly in PowerShell 5.1)
+    1.1.0    2026-10-23  <Your name>     Copy the Office folder (Microsoft 365 Apps) to the stick;
+                                         cumulative update on the stick is now recommended, not required
 #>
 
 #Requires -Version 5.1
@@ -112,6 +116,8 @@ $MinFreeSpaceGB  = 20
 $WinPEMarkerFile = Join-Path $WorkspacePath '.3it-winpe-netdrivers.done'
 $DeployScript    = Join-Path $PSScriptRoot 'Deploy-OSDCloud-Win11-25H2.ps1'
 $PrepareScript   = Join-Path $PSScriptRoot 'Prepare-OSDCloudLanguageRepo.ps1'
+$OfficeFolder    = Join-Path $PSScriptRoot 'Office'
+$OfficeFiles     = @('setup.exe', 'installM365BP.xml', 'Install-M365Apps.ps1')
 #endregion -----------------------------------------------------------------------------------------
 
 #region Helper functions ---------------------------------------------------------------------------
@@ -218,6 +224,14 @@ try {
         if (-not (Test-Path $file)) { throw "Missing file next to this script: $(Split-Path $file -Leaf)" }
     }
     Write-Ok 'Deploy and Prepare scripts found'
+    foreach ($file in $OfficeFiles) {
+        if (-not (Test-Path (Join-Path $OfficeFolder $file))) { throw "Missing file: Office\$file" }
+    }
+    $sig = Get-AuthenticodeSignature -FilePath (Join-Path $OfficeFolder 'setup.exe')
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        throw 'Office\setup.exe is not validly signed by Microsoft. Download the Office Deployment Tool again.'
+    }
+    Write-Ok "Office files found (setup.exe $((Get-Item (Join-Path $OfficeFolder 'setup.exe')).VersionInfo.FileVersion), signed by Microsoft)"
     $freeGB = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 1)
     if ($freeGB -lt $MinFreeSpaceGB) { throw "Only $freeGB GB free on C:. Need at least $MinFreeSpaceGB GB." }
     Write-Ok "$freeGB GB free on C:"
@@ -402,7 +416,7 @@ try {
 
     $lcuOnStick = @(Get-ChildItem -Path "$($usbLetter):\OSDCloud\Languages\LCU" -Filter '*.msu' -File -ErrorAction SilentlyContinue)
     if ($lcuOnStick.Count -eq 0) {
-        Write-Warning 'No cumulative update on the stick yet. Opening the Microsoft Update Catalog in your browser.'
+        Write-Warning 'No cumulative update on the stick yet (recommended, not required). Opening the Microsoft Update Catalog in your browser.'
         Write-Warning 'Download the newest "Cumulative Update for Windows 11 Version 25H2 for x64-based Systems" (.msu) to a folder, then re-run with -LcuPath <folder>.'
         if (-not $WhatIfPreference) { Start-Process $Urls.Catalog }
     }
@@ -410,17 +424,27 @@ try {
         $lcuOnStick | ForEach-Object { Write-Ok "LCU on stick: $($_.Name) (copied $($_.LastWriteTime.ToString('yyyy-MM-dd')))" }
         $oldest = ($lcuOnStick | Measure-Object -Property LastWriteTime -Minimum).Minimum
         if ($oldest -lt (Get-Date).AddDays(-35)) {
-            Write-Warning 'The cumulative update on the stick is older than 5 weeks. Download the latest one and re-run with -LcuPath.'
+            Write-Warning ('The cumulative update on the stick is older than 5 weeks. Deployments still work, but download ' +
+                'the latest one and re-run with -LcuPath to keep all language text up to date.')
         }
     }
 
     #--- 9. Deployment script ----------------------------------------------------------------------
-    Write-Step '9/9  Deployment script on the stick'
+    Write-Step '9/9  Deployment script and Office files on the stick'
     $scriptDest = "$($usbLetter):\OSDCloud\Scripts"
     if ($PSCmdlet.ShouldProcess($scriptDest, 'Copy Deploy-OSDCloud-Win11-25H2.ps1')) {
         $null = New-Item -Path $scriptDest -ItemType Directory -Force
         Copy-Item -Path $DeployScript -Destination $scriptDest -Force
         Write-Ok "Copied to $scriptDest"
+    }
+    # Not in OSDCloud\Config\Scripts: OSDCloud would pick that up on its own, also with -SkipOffice.
+    $officeDest = "$($usbLetter):\OSDCloud\Office"
+    if ($PSCmdlet.ShouldProcess($officeDest, 'Copy Office files')) {
+        $null = New-Item -Path $officeDest -ItemType Directory -Force
+        foreach ($file in $OfficeFiles) {
+            Copy-Item -Path (Join-Path $OfficeFolder $file) -Destination $officeDest -Force
+        }
+        Write-Ok "Office files copied to $officeDest"
     }
 
     Write-Step 'Done'

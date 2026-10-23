@@ -13,7 +13,10 @@
              on the OSDCloud USB stick. Because more than one language is installed, OOBE asks the
              user to pick a language, then region, then keyboard layout.
           3. Re-applies the latest cumulative update (LCU) after the language packs, as Microsoft
-             requires (otherwise parts of Windows can stay in English).
+             requires (otherwise parts of Windows can stay in English). Optional: a missing or
+             outdated LCU on the stick gives a warning, not a failed deployment.
+          4. Stages the Microsoft 365 Apps install (same setup.exe + XML as our Intune package) so it
+             runs at the end of SetupComplete. Skip it with -SkipOffice.
         All other drivers (and firmware offered through Windows Update) are installed by Windows
         Update during SetupComplete, before OOBE starts.
 
@@ -25,9 +28,14 @@
         - Language repository on the USB stick, created with Prepare-OSDCloudLanguageRepo.ps1:
               <USB>:\OSDCloud\Languages\LOF\   language packs, FODs and metadata
               <USB>:\OSDCloud\Languages\LCU\   latest cumulative update (.msu) for 25H2 x64
+        - Office files on the USB stick, copied by Initialize-OSDCloudBuild.ps1:
+              <USB>:\OSDCloud\Office\          setup.exe, installM365BP.xml, Install-M365Apps.ps1
 
     WARNING: This script is ZERO TOUCH. It wipes the internal disk WITHOUT asking.
              Run it with -WhatIf first to do the pre-flight checks only.
+
+.PARAMETER SkipOffice
+    Do not install Microsoft 365 Apps (for customers without Microsoft 365 Apps licences).
 
 .EXAMPLE
     # Pre-flight checks only, nothing is wiped or installed
@@ -37,16 +45,25 @@
     # Full deployment (wipes the disk!)
     .\Deploy-OSDCloud-Win11-25H2.ps1
 
+.EXAMPLE
+    # Full deployment without Microsoft 365 Apps
+    .\Deploy-OSDCloud-Win11-25H2.ps1 -SkipOffice
+
 .NOTES
     Version history
     Version  Date        Author          Change
     -------  ----------  --------------  ------------------------------------------------------------
     1.0.0    2026-10-23  <Your name>     Initial version
+    1.1.0    2026-10-23  <Your name>     Install Microsoft 365 Apps during SetupComplete; -SkipOffice;
+                                         pre-flight internet check before the disk is wiped;
+                                         outdated LCU on the stick is a warning instead of a failure
 #>
 
 #Requires -Version 5.1
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [switch]$SkipOffice
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -62,6 +79,14 @@ $Config = [ordered]@{
     # if one does not exist for a language, the script logs a warning and continues.
     LanguageFeatures     = @('Basic', 'Handwriting', 'OCR', 'Speech', 'TextToSpeech')
     RepoRelativePath     = 'OSDCloud\Languages'      # Folder on the USB stick
+    # Checked BEFORE the disk is wiped. OSDCloud wipes first and downloads Windows after that,
+    # so without internet the device would end up with an empty disk.
+    WindowsDownloadHost  = 'dl.delivery.mp.microsoft.com:80'   # Windows image (from the OSD catalog)
+    OfficeDownloadHost   = 'officecdn.microsoft.com:443'       # Microsoft 365 Apps
+    OfficeRelativePath   = 'OSDCloud\Office'         # Folder on the USB stick
+    OfficeFiles          = @('setup.exe', 'installM365BP.xml', 'Install-M365Apps.ps1')
+    # OSDCloud runs SetupComplete.cmd from this folder at the end of SetupComplete (after Windows Update)
+    SetupCompleteFolder  = 'C:\OSDCloud\Scripts\SetupComplete'
     LogFolder            = 'C:\OSDCloud\Logs'
     ScratchFolder        = 'C:\OSDCloud\Scratch'
     NetDriverFolder      = 'C:\Drivers\Net'
@@ -123,6 +148,40 @@ function Test-LanguageRepo {
     else {
         $lcu | ForEach-Object { Write-Host "  OK  LCU found: $($_.Name)" }
     }
+}
+
+function Test-InternetHost {
+    # Opens a TCP connection to host:port (this also tests DNS). Plain .NET, because
+    # Test-NetConnection is not always available in WinPE. Retries a few times, since a
+    # Wi-Fi connection can take a moment to get an IP address.
+    param(
+        [Parameter(Mandatory)][string]$HostAndPort,
+        [int]$Attempts = 4,
+        [int]$TimeoutSeconds = 5
+    )
+    $hostName, $port = $HostAndPort -split ':'
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $client = New-Object System.Net.Sockets.TcpClient
+        try {
+            $connect = $client.ConnectAsync($hostName, [int]$port)
+            if ($connect.Wait($TimeoutSeconds * 1000) -and $client.Connected) { return $true }
+        }
+        catch { }   # DNS or connection error: try again
+        finally { $client.Dispose() }
+        if ($attempt -lt $Attempts) { Start-Sleep -Seconds 5 }
+    }
+    return $false
+}
+
+function Test-OfficeSource {
+    # Makes sure the Office files are on the stick BEFORE the disk is wiped.
+    param([Parameter(Mandatory)][string]$OfficePath)
+    foreach ($file in $Config.OfficeFiles) {
+        if (-not (Test-Path (Join-Path $OfficePath $file))) {
+            throw "Office file not found: $(Join-Path $OfficePath $file). Re-run Initialize-OSDCloudBuild.ps1, or deploy with -SkipOffice."
+        }
+    }
+    Write-Host "  OK  Office files found: $OfficePath"
 }
 
 function Export-WinPENetworkDriver {
@@ -189,12 +248,30 @@ try {
     Import-Module OSD -Force
     Write-Host "  OK  OSD module $((Get-Module OSD).Version)"
 
+    $hosts = @($Config.WindowsDownloadHost)
+    if (-not $SkipOffice) { $hosts += $Config.OfficeDownloadHost }
+    foreach ($hostAndPort in $hosts) {
+        if (-not (Test-InternetHost -HostAndPort $hostAndPort)) {
+            throw ("No internet: cannot reach $hostAndPort. Nothing has been wiped. Connect Ethernet, or Wi-Fi " +
+                "with Start-WinREWiFi, then run the script again. (A Microsoft download server down is rare; " +
+                "a network that blocks it, such as a guest network with a login page, is more likely.)")
+        }
+        Write-Host "  OK  Internet: $hostAndPort reachable"
+    }
+
     $repo = Find-LanguageRepo -RelativePath $Config.RepoRelativePath
     if (-not $repo) {
         throw "Language repository '$($Config.RepoRelativePath)\LOF' not found on any drive. Is the OSDCloud USB stick connected?"
     }
     Write-Host "  OK  Language repository: $repo"
     Test-LanguageRepo -RepoPath $repo -Languages $Config.ExtraLanguages
+    if ($SkipOffice) {
+        Write-Host '  -SkipOffice: Microsoft 365 Apps will not be installed'
+    }
+    else {
+        # The Office folder is on the same stick as the language repository
+        Test-OfficeSource -OfficePath (Join-Path (Split-Path $repo -Qualifier) $Config.OfficeRelativePath)
+    }
 
     if ($WhatIfPreference) {
         Write-Step 'WhatIf: pre-flight checks passed. The real run would now:'
@@ -202,6 +279,7 @@ try {
         Write-Host '  - Inject only the Ethernet/Wi-Fi drivers WinPE is using'
         Write-Host "  - Add languages: $($Config.ExtraLanguages -join ', ') + re-apply the LCU"
         Write-Host '  - Let Windows Update install all other drivers and firmware during SetupComplete'
+        if (-not $SkipOffice) { Write-Host '  - Install Microsoft 365 Apps at the end of SetupComplete' }
         Write-Host '  - Restart into OOBE (language > region > keyboard)'
         $deploymentOk = $true
         return
@@ -261,18 +339,58 @@ try {
     #--- 5. Re-apply the cumulative update ---------------------------------------------------------
     # Microsoft: after adding a language pack the LCU must be reinstalled. Windows Update will NOT
     # offer an LCU that is already installed, so this has to happen here.
+    # The LCU on the stick is "nice to have": when it is missing or older than the update already in
+    # the downloaded image, we warn and continue. Windows Update in SetupComplete installs any newer
+    # LCU, which also updates the languages. At worst some text stays English until next Patch Tuesday.
     $lcuFolder = Join-Path $repo 'LCU'
     if (@(Get-ChildItem -Path $lcuFolder -Filter '*.msu' -File -ErrorAction SilentlyContinue).Count -gt 0) {
         Write-Step 'Re-applying the cumulative update (this can take 10-20 minutes)'
-        # Passing the folder lets DISM install checkpoint + latest update in the right order.
-        Add-WindowsPackage -Path 'C:\' -PackagePath $lcuFolder -ScratchDirectory $Config.ScratchFolder | Out-Null
-        Write-Host '  OK  Cumulative update applied'
+        try {
+            # Passing the folder lets DISM install checkpoint + latest update in the right order.
+            Add-WindowsPackage -Path 'C:\' -PackagePath $lcuFolder -ScratchDirectory $Config.ScratchFolder | Out-Null
+            Write-Host '  OK  Cumulative update applied'
+        }
+        catch {
+            # 0x800F081E = CBS_E_NOT_APPLICABLE: the image already has a newer update than the stick.
+            # Any other error (corrupt file, disk problem) still stops the deployment.
+            $hresult = '{0:X8}' -f $_.Exception.HResult
+            if ($hresult -ne '800F081E' -and $_.Exception.Message -notmatch 'not applicable') { throw }
+            Write-Warning ('The cumulative update on the stick is older than the one already in the Windows image ' +
+                '(not applicable). Skipped. Put the latest update on the stick to avoid English text in some places.')
+        }
     }
     else {
         Write-Warning 'No LCU in the repository. Skipped. Some text may stay in English until the next monthly update.'
     }
 
-    #--- 6. Verify ---------------------------------------------------------------------------------
+    #--- 6. Microsoft 365 Apps ---------------------------------------------------------------------
+    # Office cannot be installed offline from WinPE. We stage the files and let OSDCloud's
+    # SetupComplete run them in the new Windows, after Windows Update and before OOBE.
+    if (-not $SkipOffice) {
+        Write-Step 'Staging Microsoft 365 Apps install for SetupComplete'
+        $officeSource = Join-Path (Split-Path $repo -Qualifier) $Config.OfficeRelativePath
+        $officeDest   = Join-Path $Config.SetupCompleteFolder 'Office'
+        $null = New-Item -Path $officeDest -ItemType Directory -Force
+        foreach ($file in $Config.OfficeFiles) {
+            Copy-Item -Path (Join-Path $officeSource $file) -Destination $officeDest -Force
+        }
+
+        $command = '%windir%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' +
+            (Join-Path $officeDest 'Install-M365Apps.ps1') + '"'
+        $setupCompleteCmd = Join-Path $Config.SetupCompleteFolder 'SetupComplete.cmd'
+        if (Test-Path $setupCompleteCmd) {
+            # Another SetupComplete.cmd was already staged: add our line instead of replacing it.
+            if (-not (Select-String -Path $setupCompleteCmd -Pattern 'Install-M365Apps.ps1' -SimpleMatch -Quiet)) {
+                Add-Content -Path $setupCompleteCmd -Value $command -Encoding Ascii
+            }
+        }
+        else {
+            Set-Content -Path $setupCompleteCmd -Value '@echo off', $command -Encoding Ascii
+        }
+        Write-Host "  OK  Office staged in $officeDest"
+    }
+
+    #--- 7. Verify ---------------------------------------------------------------------------------
     Write-Step 'Verifying installed languages'
     $installed = Get-WindowsPackage -Path 'C:\' | Where-Object { $_.PackageName -like '*Client-LanguagePack*' }
     $installed | ForEach-Object { Write-Host "  $($_.PackageName)  [$($_.PackageState)]" }
