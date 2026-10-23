@@ -313,6 +313,15 @@ Start-WinREWiFi
 
 and pick the network.
 
+**Keyboard:** WinPE uses the **Belgian (Period)** keyboard (AZERTY), so type the Wi-Fi password as on a normal Belgian keyboard. Sticks built before build script version 1.2.0 still use the US keyboard (QWERTY). On such a stick, switch for this session and open a new window, because the change only applies to programs started afterwards:
+
+```powershell
+wpeutil SetKeyboardLayout 0813:00000813
+start powershell
+```
+
+Then run `Start-WinREWiFi` in the new window. Better: rebuild the stick with `-RebuildWinPE` (see [section 11](#11-changing-the-scripts)).
+
 Use a **dedicated deployment or guest network** if possible: the Wi-Fi password is copied to the new Windows so it can connect during setup.
 
 ### Step 7.3 - Find the stick's drive letter
@@ -400,6 +409,7 @@ For the curious - you do not need to know this to use it.
 | `Language repository ... not found on any drive` (deployment) | Stick not detected or language files missing | Check the stick is plugged in. Rebuild with `.\Initialize-OSDCloudBuild.ps1 -RefreshLanguages` |
 | `No third-party network drivers in use in WinPE` (warning) | Device uses a network chip Windows already supports (normal on VMs) | Nothing to do |
 | No language choice in OOBE | Language packs missing | Check the deployment log for errors in step "Adding language" |
+| Wi-Fi password is not accepted in WinPE | Wrong keyboard layout: the stick still has a US (QWERTY) WinPE | Use `wpeutil SetKeyboardLayout 0813:00000813` (see [step 7.2](#step-72---connect-to-the-internet-wi-fi-only)), or rebuild the stick with `-RebuildWinPE` |
 | `No internet: cannot reach ...` (deployment pre-flight) | No network in WinPE, no Wi-Fi driver, or a network that blocks the download (for example a guest network with a login page) | Nothing was erased. Connect Ethernet, or Wi-Fi with `Start-WinREWiFi`, and run the same command again |
 | `Office file not found` (deployment pre-flight) | Stick was built before Office was added | Run `.\Initialize-OSDCloudBuild.ps1` again (step 9 copies the Office folder), or deploy with `-SkipOffice` |
 | Office missing after OOBE | No internet during SetupComplete, or setup.exe failed | Check the Office logs ([section 10](#10-log-files)). Retry as administrator: `powershell.exe -ExecutionPolicy Bypass -File C:\OSDCloud\Scripts\SetupComplete\Office\Install-M365Apps.ps1` |
@@ -451,6 +461,11 @@ When asking for help, send the relevant log.
 
 - **Always edit the scripts in the repo folder**, never directly on the stick. Then run `Initialize-OSDCloudBuild.ps1` again - step 9 copies the new deployment script to the stick.
 - Settings (Windows version, edition, languages) are at the top of `Deploy-OSDCloud-Win11-25H2.ps1` in the `Configuration` section.
+- The **WinPE keyboard** is `$WinPEInputLocale` in the `Configuration` section of `Initialize-OSDCloudBuild.ps1`: Belgian (Period) `0813:00000813` by default, Belgian French is `080C:0000080C`. It only affects WinPE (typing the Wi-Fi password); users still choose their own keyboard in OOBE. WinPE is only built once, so after changing it (or to update an older stick) run:
+  ```powershell
+  .\Initialize-OSDCloudBuild.ps1 -RebuildWinPE
+  ```
+  This rebuilds WinPE (about 30 minutes) and updates the stick's boot files. The language files, Office files and update on the stick stay as they are.
 - Office settings (product, languages, channel, excluded apps) are in `Office\installM365BP.xml`. It is the same file as in our Intune package: **when you change one, change the other too.** Build a new XML with the [Office Customization Tool](https://config.office.com).
 - After changing anything in `Office\`, run `Initialize-OSDCloudBuild.ps1` again so the stick gets the new files.
 - **Updating the Office Deployment Tool (`Office\setup.exe`)** - Microsoft releases a new version about once a month and recommends always using the latest ([release history](https://learn.microsoft.com/officeupdates/odt-release-history)). To update:

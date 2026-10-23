@@ -13,7 +13,8 @@
           1. Pre-flight checks (admin, Windows 11, free space, script files present)
           2. Install Windows ADK (Deployment Tools) + WinPE add-on, if missing
           3. Install or update the OSD PowerShell module
-          4. Create the OSDCloud template (WinRE based, needed for Wi-Fi) and workspace
+          4. Create the OSDCloud template (WinRE based, needed for Wi-Fi) and workspace, with a
+             Belgian keyboard in WinPE ($WinPEInputLocale)
           5. Add network drivers to WinPE (Edit-OSDCloudWinPE -CloudDriver *)
           6. Create the OSDCloud USB stick (ERASES the stick, asks for confirmation)
              or update an existing one
@@ -82,6 +83,8 @@
                                          counted correctly in PowerShell 5.1)
     1.1.0    2026-10-23  <Your name>     Copy the Office folder (Microsoft 365 Apps) to the stick;
                                          cumulative update on the stick is now recommended, not required
+    1.2.0    2026-10-23  <Your name>     Belgian (Period) keyboard in WinPE instead of US (needs -RebuildWinPE
+                                         on an existing workspace)
 #>
 
 #Requires -Version 5.1
@@ -113,6 +116,11 @@ $Urls = @{
     Catalog  = 'https://www.catalog.update.microsoft.com/Search.aspx?q=Cumulative%20Update%20for%20Windows%2011%20Version%2025H2%20for%20x64'
 }
 $MinFreeSpaceGB  = 20
+# Keyboard in WinPE, for typing the Wi-Fi password. Default WinPE is US (0409:00000409).
+# Belgian (Period) = 0813:00000813, Belgian French = 080C:0000080C. IDs from Microsoft Learn:
+# https://learn.microsoft.com/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs
+# Changing this only takes effect after a run with -RebuildWinPE.
+$WinPEInputLocale = '0813:00000813'
 $WinPEMarkerFile = Join-Path $WorkspacePath '.3it-winpe-netdrivers.done'
 $DeployScript    = Join-Path $PSScriptRoot 'Deploy-OSDCloud-Win11-25H2.ps1'
 $PrepareScript   = Join-Path $PSScriptRoot 'Prepare-OSDCloudLanguageRepo.ps1'
@@ -300,7 +308,7 @@ try {
             throw 'Windows Recovery Environment is not available on this PC. Run "reagentc /enable" in an elevated prompt and try again.'
         }
         $templateStart = Get-Date
-        New-OSDCloudTemplate -WinRE
+        New-OSDCloudTemplate -WinRE -SetInputLocale $WinPEInputLocale
 
         # New-OSDCloudTemplate does not stop when adding WinPE packages fails (it only warns),
         # which leaves a WinPE without PowerShell. Check its own log and stop if anything failed.
