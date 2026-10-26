@@ -1,0 +1,5 @@
+# Downloaded by Initialize-OSDCloudBuild.ps1 (latest Office Deployment Tool), never commit it
+Office/setup.exe
+
+# Logs collected from devices (Collect-DeploymentLogs.ps1) contain device information
+Logs/

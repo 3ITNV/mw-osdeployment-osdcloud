@@ -20,19 +20,22 @@
              or update an existing one
           7. Download the Languages and Optional Features ISO, if not provided
           8. Fill the language repository on the stick (Prepare-OSDCloudLanguageRepo.ps1)
-          9. Copy the deployment script, the start menu (StartNet), the Office folder
-             (Microsoft 365 Apps) and the debloat script (pinned download, SHA-256 checked) to the stick
+          9. Copy the deployment script, the start menu (StartNet), the Office files, the latest
+             Office Deployment Tool (setup.exe, downloaded and signature-checked), the debloat script
+             (pinned download, SHA-256 checked) and Collect-DeploymentLogs.ps1 to the stick
 
-        Monthly maintenance (required): download the new cumulative update (ALL .msu files, including
-        the checkpoint) and re-run with -LcuPath. Only the update on the stick is replaced; everything
-        else is skipped. Without it, deployments stop at the pre-flight (no OOBE language choice).
+        Monthly maintenance: download the new cumulative update (ALL .msu files, including the
+        checkpoint) and run with -StickOnly -LcuPath <folder>. That only updates the stick (steps 8-9,
+        a few minutes, any Windows PC with internet): no ADK, OSD module or WinPE needed. It also
+        refreshes setup.exe and all scripts on the stick.
 
-        Keep these files in the same folder:
+        Keep these files in the same folder (a clone of the repo):
             Initialize-OSDCloudBuild.ps1
             Prepare-OSDCloudLanguageRepo.ps1
             Deploy-OSDCloud-Win11-25H2.ps1
             Start-OSDCloudDeployMenu.ps1
-            Office\   (setup.exe, installM365BP.xml, Install-M365Apps.ps1)
+            Collect-DeploymentLogs.ps1
+            Office\   (installM365BP.xml, Install-M365Apps.ps1)
 
     Author:  <Your name> - 3-IT
 
@@ -61,6 +64,11 @@
 .PARAMETER RefreshLanguages
     Copy the language files to the stick again even if they are already there.
 
+.PARAMETER StickOnly
+    Only update an existing OSDCloudUSB stick: cumulative update (-LcuPath), scripts, Office files,
+    setup.exe and debloat (steps 8-9). Skips ADK, OSD module, WinPE and creating the stick, so it
+    works on any Windows 11 PC without a previous build. Use it for the monthly update.
+
 .EXAMPLE
     # First run: shows what would happen, changes nothing
     .\Initialize-OSDCloudBuild.ps1 -WhatIf
@@ -70,8 +78,8 @@
     .\Initialize-OSDCloudBuild.ps1 -LcuPath 'C:\Updates\25H2'
 
 .EXAMPLE
-    # Monthly: refresh only the cumulative update on the stick
-    .\Initialize-OSDCloudBuild.ps1 -LcuPath 'C:\Updates\2026-11'
+    # Monthly, on any PC: new cumulative update + latest scripts, setup.exe and debloat on the stick
+    .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\2026-11'
 
 .NOTES
     Version history
@@ -94,6 +102,10 @@
     1.4.0    2026-10-23  <Your name>     Download Andrew Taylor's RemoveBloat.ps1 (pinned commit, SHA-256
                                          checked) to OSDCloud\Debloat on the stick
     1.4.1    2026-10-24  <Your name>     Texts only: the cumulative update on the stick is required again
+    1.5.0    2026-10-26  <Your name>     Download the latest Office Deployment Tool (setup.exe) from the
+                                         Office CDN instead of keeping it in the repo; copy
+                                         Collect-DeploymentLogs.ps1 to the stick root; -StickOnly for the
+                                         monthly update without ADK/OSD/WinPE
 #>
 
 #Requires -Version 5.1
@@ -108,7 +120,8 @@ param(
     [string[]]$Languages   = @('nl-NL', 'fr-FR'),
     [switch]$RebuildWinPE,
     [switch]$RecreateUsb,
-    [switch]$RefreshLanguages
+    [switch]$RefreshLanguages,
+    [switch]$StickOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,8 +147,12 @@ $WinPEMarkerFile = Join-Path $WorkspacePath '.3it-winpe-netdrivers.done'
 $DeployScript    = Join-Path $PSScriptRoot 'Deploy-OSDCloud-Win11-25H2.ps1'
 $PrepareScript   = Join-Path $PSScriptRoot 'Prepare-OSDCloudLanguageRepo.ps1'
 $MenuScript      = Join-Path $PSScriptRoot 'Start-OSDCloudDeployMenu.ps1'
+$CollectScript   = Join-Path $PSScriptRoot 'Collect-DeploymentLogs.ps1'
 $OfficeFolder    = Join-Path $PSScriptRoot 'Office'
-$OfficeFiles     = @('setup.exe', 'installM365BP.xml', 'Install-M365Apps.ps1')
+$OfficeFiles     = @('installM365BP.xml', 'Install-M365Apps.ps1')   # setup.exe is downloaded, see below
+# Office Deployment Tool: always the latest setup.exe, straight from Microsoft's Office CDN (the same
+# file as in the Download Center package, used by Evergreen and others). Checked: signed by Microsoft.
+$OfficeSetupUrl  = 'https://officecdn.microsoft.com/pr/wsus/setup.exe'
 # Debloat: Andrew Taylor's RemoveBloat.ps1 (GPL-3.0, https://github.com/andrew-s-taylor/public).
 # Not stored in this repo: downloaded at ONE fixed commit and checked against its SHA-256, so a change
 # upstream never reaches our devices unnoticed. To update: pick a new commit, review the changes,
@@ -278,18 +295,15 @@ try {
         throw 'Run this on Windows 11. The WinRE-based WinPE (needed for Wi-Fi) is taken from this PC.'
     }
     Write-Ok 'Windows 11'
-    foreach ($file in $DeployScript, $PrepareScript, $MenuScript) {
+    foreach ($file in $DeployScript, $PrepareScript, $MenuScript, $CollectScript) {
         if (-not (Test-Path $file)) { throw "Missing file next to this script: $(Split-Path $file -Leaf)" }
     }
-    Write-Ok 'Deploy and Prepare scripts found'
+    Write-Ok 'Deploy, Prepare, menu and log collection scripts found'
     foreach ($file in $OfficeFiles) {
         if (-not (Test-Path (Join-Path $OfficeFolder $file))) { throw "Missing file: Office\$file" }
     }
-    $sig = Get-AuthenticodeSignature -FilePath (Join-Path $OfficeFolder 'setup.exe')
-    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-        throw 'Office\setup.exe is not validly signed by Microsoft. Download the Office Deployment Tool again.'
-    }
-    Write-Ok "Office files found (setup.exe $((Get-Item (Join-Path $OfficeFolder 'setup.exe')).VersionInfo.FileVersion), signed by Microsoft)"
+    Write-Ok 'Office files found (setup.exe is downloaded in step 9)'
+    if ($StickOnly) { Write-Ok '-StickOnly: only the stick is updated (steps 8-9)' }
     $freeGB = [math]::Round((Get-PSDrive -Name C).Free / 1GB, 1)
     if ($freeGB -lt $MinFreeSpaceGB) { throw "Only $freeGB GB free on C:. Need at least $MinFreeSpaceGB GB." }
     Write-Ok "$freeGB GB free on C:"
@@ -297,110 +311,117 @@ try {
         throw "No .msu files found in -LcuPath '$LcuPath'."
     }
 
-    #--- 2. ADK ------------------------------------------------------------------------------------
-    Write-Step '2/9  Windows ADK + WinPE add-on'
-    $adkPaths = Get-3ITAdkPath
-    if (Test-Path $adkPaths.DeploymentTools) {
-        Write-Skip 'ADK Deployment Tools already installed'
+    #--- 2-5. Build tools and WinPE (skipped with -StickOnly) ------------------------------------
+    if ($StickOnly) {
+        Write-Step '2-5/9  ADK, OSD module, WinPE'
+        Write-Skip '-StickOnly: no ADK, OSD module or WinPE needed to update the stick'
     }
-    elseif ($PSCmdlet.ShouldProcess('Windows ADK', 'Download and install Deployment Tools')) {
-        $exe = Join-Path $DownloadPath 'Downloads\adksetup.exe'
-        Save-MicrosoftFile -Url $Urls.Adk -Destination $exe
-        Invoke-Installer -FilePath $exe -Arguments '/quiet /features OptionId.DeploymentTools' -Name 'Windows ADK'
-    }
-    if (Test-Path $adkPaths.WinPE) {
-        Write-Skip 'WinPE add-on already installed'
-    }
-    elseif ($PSCmdlet.ShouldProcess('WinPE add-on', 'Download and install')) {
-        $exe = Join-Path $DownloadPath 'Downloads\adkwinpesetup.exe'
-        Save-MicrosoftFile -Url $Urls.AdkWinPE -Destination $exe
-        Invoke-Installer -FilePath $exe -Arguments '/quiet /features OptionId.WindowsPreinstallationEnvironment' -Name 'WinPE add-on'
-    }
-    $adkVersion = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -like 'Windows Assessment and Deployment Kit*' -and $_.DisplayName -notlike '*Preinstallation*' } |
-        Select-Object -First 1 -ExpandProperty DisplayVersion
-    if ($adkVersion -and [version]$adkVersion -lt [version]'10.1.26100.0') {
-        Write-Warning "Installed ADK is version $adkVersion. Version 10.1.26100.x or newer is recommended for 25H2. Uninstall the old ADK and re-run."
-    }
-
-    #--- 3. OSD module -----------------------------------------------------------------------------
-    Write-Step '3/9  OSD PowerShell module'
-    if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue | Where-Object Version -ge '2.8.5.201')) {
-        if ($PSCmdlet.ShouldProcess('NuGet package provider', 'Install')) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
-            Write-Ok 'NuGet provider installed'
+    else {
+        #--- 2. ADK ------------------------------------------------------------------------------------
+        Write-Step '2/9  Windows ADK + WinPE add-on'
+        $adkPaths = Get-3ITAdkPath
+        if (Test-Path $adkPaths.DeploymentTools) {
+            Write-Skip 'ADK Deployment Tools already installed'
         }
-    }
-    $installed = Get-Module -ListAvailable -Name OSD | Sort-Object Version -Descending | Select-Object -First 1
-    $latest    = Find-Module -Name OSD -Repository PSGallery
-    if ($installed -and $installed.Version -ge $latest.Version) {
-        Write-Skip "OSD $($installed.Version) is the latest version"
-    }
-    elseif ($PSCmdlet.ShouldProcess("OSD $($latest.Version)", 'Install from PowerShell Gallery')) {
-        Install-Module -Name OSD -RequiredVersion $latest.Version -Scope AllUsers -Force -AllowClobber
-        Write-Ok "OSD $($latest.Version) installed"
-    }
-    if (Get-Module -ListAvailable -Name OSD) {
-        Import-Module OSD -Force -WarningAction SilentlyContinue
-        Write-Ok "OSD $((Get-Module OSD).Version) loaded"
-    }
-
-    #--- 4. Template + workspace -------------------------------------------------------------------
-    Write-Step '4/9  OSDCloud template (WinRE) and workspace'
-    $workspaceReady = Test-Path (Join-Path $WorkspacePath 'Media\sources\boot.wim')
-    if ($workspaceReady -and -not $RebuildWinPE) {
-        Write-Skip "Workspace already exists: $WorkspacePath"
-    }
-    elseif ($PSCmdlet.ShouldProcess($WorkspacePath, 'Create OSDCloud template (WinRE) and workspace')) {
-        # WinRE is taken from this PC, so the recovery environment must be enabled.
-        $winRE = Get-WinREPartition -ErrorAction SilentlyContinue
-        if (-not $winRE -or $winRE.OperationalStatus -ne 'Online') {
-            throw 'Windows Recovery Environment is not available on this PC. Run "reagentc /enable" in an elevated prompt and try again.'
+        elseif ($PSCmdlet.ShouldProcess('Windows ADK', 'Download and install Deployment Tools')) {
+            $exe = Join-Path $DownloadPath 'Downloads\adksetup.exe'
+            Save-MicrosoftFile -Url $Urls.Adk -Destination $exe
+            Invoke-Installer -FilePath $exe -Arguments '/quiet /features OptionId.DeploymentTools' -Name 'Windows ADK'
         }
-        $templateStart = Get-Date
-        New-OSDCloudTemplate -WinRE -SetInputLocale $WinPEInputLocale
-
-        # New-OSDCloudTemplate does not stop when adding WinPE packages fails (it only warns),
-        # which leaves a WinPE without PowerShell. Check its own log and stop if anything failed.
-        $templateLog = Get-ChildItem -Path "$env:ProgramData\OSDCloud\Logs\Template" -Filter '*New-OSDCloudTemplate.log' -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -ge $templateStart } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if (-not $templateLog) { throw 'Could not find the New-OSDCloudTemplate log to verify the result.' }
-        # Count the short 'Add-WindowsPackage failed' line: it is never wrapped in the log.
-        $failedCount = @(Select-String -Path $templateLog.FullName -Pattern 'Add-WindowsPackage failed').Count
-        if ($failedCount -gt 0) {
-            throw ("New-OSDCloudTemplate could not add $failedCount WinPE package(s). The WinPE would not work " +
-                "(no PowerShell). Template log: $($templateLog.FullName). " +
-                "Per-package logs: $env:ProgramData\OSDCloud\Logs\Template")
+        if (Test-Path $adkPaths.WinPE) {
+            Write-Skip 'WinPE add-on already installed'
         }
-        Write-Ok 'All WinPE packages added'
-
-        New-OSDCloudWorkspace -WorkspacePath $WorkspacePath
-        if (-not (Test-Path (Join-Path $WorkspacePath 'Media\sources\boot.wim'))) {
-            throw "Workspace creation failed: no boot.wim in $WorkspacePath\Media\sources."
+        elseif ($PSCmdlet.ShouldProcess('WinPE add-on', 'Download and install')) {
+            $exe = Join-Path $DownloadPath 'Downloads\adkwinpesetup.exe'
+            Save-MicrosoftFile -Url $Urls.AdkWinPE -Destination $exe
+            Invoke-Installer -FilePath $exe -Arguments '/quiet /features OptionId.WindowsPreinstallationEnvironment' -Name 'WinPE add-on'
         }
-        if (Test-Path $WinPEMarkerFile) { Remove-Item $WinPEMarkerFile -Force }
-        $winPEChanged = $true
-        Write-Ok 'Template and workspace created'
-    }
-
-    #--- 5. WinPE network drivers ------------------------------------------------------------------
-    Write-Step '5/9  Network drivers in WinPE'
-    if ((Test-Path $WinPEMarkerFile) -and -not $RebuildWinPE) {
-        Write-Skip 'Network drivers already added to WinPE'
-    }
-    elseif ($PSCmdlet.ShouldProcess('WinPE boot.wim', 'Add cloud drivers (Edit-OSDCloudWinPE -CloudDriver *)')) {
-        Dismount-WorkspaceBootWim
-        Set-DellWinPEDriverPackFallback
-        try {
-            Edit-OSDCloudWinPE -WorkspacePath $WorkspacePath -CloudDriver '*'
+        $adkVersion = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Windows Assessment and Deployment Kit*' -and $_.DisplayName -notlike '*Preinstallation*' } |
+            Select-Object -First 1 -ExpandProperty DisplayVersion
+        if ($adkVersion -and [version]$adkVersion -lt [version]'10.1.26100.0') {
+            Write-Warning "Installed ADK is version $adkVersion. Version 10.1.26100.x or newer is recommended for 25H2. Uninstall the old ADK and re-run."
         }
-        catch {
+
+        #--- 3. OSD module -----------------------------------------------------------------------------
+        Write-Step '3/9  OSD PowerShell module'
+        if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue | Where-Object Version -ge '2.8.5.201')) {
+            if ($PSCmdlet.ShouldProcess('NuGet package provider', 'Install')) {
+                Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+                Write-Ok 'NuGet provider installed'
+            }
+        }
+        $installed = Get-Module -ListAvailable -Name OSD | Sort-Object Version -Descending | Select-Object -First 1
+        $latest    = Find-Module -Name OSD -Repository PSGallery
+        if ($installed -and $installed.Version -ge $latest.Version) {
+            Write-Skip "OSD $($installed.Version) is the latest version"
+        }
+        elseif ($PSCmdlet.ShouldProcess("OSD $($latest.Version)", 'Install from PowerShell Gallery')) {
+            Install-Module -Name OSD -RequiredVersion $latest.Version -Scope AllUsers -Force -AllowClobber
+            Write-Ok "OSD $($latest.Version) installed"
+        }
+        if (Get-Module -ListAvailable -Name OSD) {
+            Import-Module OSD -Force -WarningAction SilentlyContinue
+            Write-Ok "OSD $((Get-Module OSD).Version) loaded"
+        }
+
+        #--- 4. Template + workspace -------------------------------------------------------------------
+        Write-Step '4/9  OSDCloud template (WinRE) and workspace'
+        $workspaceReady = Test-Path (Join-Path $WorkspacePath 'Media\sources\boot.wim')
+        if ($workspaceReady -and -not $RebuildWinPE) {
+            Write-Skip "Workspace already exists: $WorkspacePath"
+        }
+        elseif ($PSCmdlet.ShouldProcess($WorkspacePath, 'Create OSDCloud template (WinRE) and workspace')) {
+            # WinRE is taken from this PC, so the recovery environment must be enabled.
+            $winRE = Get-WinREPartition -ErrorAction SilentlyContinue
+            if (-not $winRE -or $winRE.OperationalStatus -ne 'Online') {
+                throw 'Windows Recovery Environment is not available on this PC. Run "reagentc /enable" in an elevated prompt and try again.'
+            }
+            $templateStart = Get-Date
+            New-OSDCloudTemplate -WinRE -SetInputLocale $WinPEInputLocale
+
+            # New-OSDCloudTemplate does not stop when adding WinPE packages fails (it only warns),
+            # which leaves a WinPE without PowerShell. Check its own log and stop if anything failed.
+            $templateLog = Get-ChildItem -Path "$env:ProgramData\OSDCloud\Logs\Template" -Filter '*New-OSDCloudTemplate.log' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $templateStart } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if (-not $templateLog) { throw 'Could not find the New-OSDCloudTemplate log to verify the result.' }
+            # Count the short 'Add-WindowsPackage failed' line: it is never wrapped in the log.
+            $failedCount = @(Select-String -Path $templateLog.FullName -Pattern 'Add-WindowsPackage failed').Count
+            if ($failedCount -gt 0) {
+                throw ("New-OSDCloudTemplate could not add $failedCount WinPE package(s). The WinPE would not work " +
+                    "(no PowerShell). Template log: $($templateLog.FullName). " +
+                    "Per-package logs: $env:ProgramData\OSDCloud\Logs\Template")
+            }
+            Write-Ok 'All WinPE packages added'
+
+            New-OSDCloudWorkspace -WorkspacePath $WorkspacePath
+            if (-not (Test-Path (Join-Path $WorkspacePath 'Media\sources\boot.wim'))) {
+                throw "Workspace creation failed: no boot.wim in $WorkspacePath\Media\sources."
+            }
+            if (Test-Path $WinPEMarkerFile) { Remove-Item $WinPEMarkerFile -Force }
+            $winPEChanged = $true
+            Write-Ok 'Template and workspace created'
+        }
+
+        #--- 5. WinPE network drivers ------------------------------------------------------------------
+        Write-Step '5/9  Network drivers in WinPE'
+        if ((Test-Path $WinPEMarkerFile) -and -not $RebuildWinPE) {
+            Write-Skip 'Network drivers already added to WinPE'
+        }
+        elseif ($PSCmdlet.ShouldProcess('WinPE boot.wim', 'Add cloud drivers (Edit-OSDCloudWinPE -CloudDriver *)')) {
             Dismount-WorkspaceBootWim
-            throw
+            Set-DellWinPEDriverPackFallback
+            try {
+                Edit-OSDCloudWinPE -WorkspacePath $WorkspacePath -CloudDriver '*'
+            }
+            catch {
+                Dismount-WorkspaceBootWim
+                throw
+            }
+            Set-Content -Path $WinPEMarkerFile -Value (Get-Date -Format s)
+            $winPEChanged = $true
+            Write-Ok 'Network drivers added to WinPE'
         }
-        Set-Content -Path $WinPEMarkerFile -Value (Get-Date -Format s)
-        $winPEChanged = $true
-        Write-Ok 'Network drivers added to WinPE'
     }
 
     #--- 6. USB stick ------------------------------------------------------------------------------
@@ -408,7 +429,12 @@ try {
     $usb = @(Get-OSDCloudUsbVolume)
     if ($usb.Count -gt 1) { throw 'More than one OSDCloudUSB stick connected. Connect only one and re-run.' }
 
-    if ($usb.Count -eq 0 -or $RecreateUsb) {
+    if ($StickOnly) {
+        # Never create or erase a stick, never touch its WinPE: only update an existing one.
+        if ($usb.Count -eq 0) { throw '-StickOnly needs an existing OSDCloudUSB stick. Plug it in, or run without -StickOnly to build one.' }
+        Write-Skip "-StickOnly: using the stick on $($usb[0].DriveLetter): as it is (WinPE not changed)"
+    }
+    elseif ($usb.Count -eq 0 -or $RecreateUsb) {
         $question = 'New-OSDCloudUSB will ERASE the USB stick you select in the next window. All data on it is lost. Continue?'
         if ($WhatIfPreference) {
             Write-Host '  What if: New-OSDCloudUSB would create the stick (ERASES the selected USB drive)'
@@ -460,6 +486,10 @@ try {
         if (-not (Test-Path $LofIsoPath)) { throw "LOF ISO not found: $LofIsoPath" }
         Write-Ok "Using $LofIsoPath"
     }
+    elseif ($StickOnly) {
+        throw ("The language files are missing on the stick. -StickOnly does not download the language ISO " +
+            '(several GB): add -LofIsoPath <ISO>, or run without -StickOnly.')
+    }
     else {
         $LofIsoPath = Join-Path $DownloadPath ('Downloads\' + (Split-Path $Urls.LofIso -Leaf))
         if ($PSCmdlet.ShouldProcess($LofIsoPath, 'Download LOF ISO (several GB, can take a while)')) {
@@ -496,7 +526,7 @@ try {
     }
 
     #--- 9. Deployment script ----------------------------------------------------------------------
-    Write-Step '9/9  Deployment script, start menu, Office and debloat files on the stick'
+    Write-Step '9/9  Deployment script, start menu, Office, debloat and log collection files on the stick'
     $scriptDest = "$($usbLetter):\OSDCloud\Scripts"
     if ($PSCmdlet.ShouldProcess($scriptDest, 'Copy Deploy-OSDCloud-Win11-25H2.ps1')) {
         $null = New-Item -Path $scriptDest -ItemType Directory -Force
@@ -513,12 +543,38 @@ try {
     }
     # Not in OSDCloud\Config\Scripts: OSDCloud would pick that up on its own, also with -SkipOffice.
     $officeDest = "$($usbLetter):\OSDCloud\Office"
-    if ($PSCmdlet.ShouldProcess($officeDest, 'Copy Office files')) {
+    if ($PSCmdlet.ShouldProcess($officeDest, 'Copy Office files and download the latest setup.exe')) {
         $null = New-Item -Path $officeDest -ItemType Directory -Force
         foreach ($file in $OfficeFiles) {
             Copy-Item -Path (Join-Path $OfficeFolder $file) -Destination $officeDest -Force
         }
         Write-Ok "Office files copied to $officeDest"
+
+        # Latest Office Deployment Tool, fresh on every run. Only replaces the stick's copy when the
+        # download is complete and signed by Microsoft; otherwise the existing setup.exe stays.
+        $setupTemp = Join-Path $DownloadPath 'Downloads\setup.exe.partial'
+        $null = New-Item -Path (Split-Path $setupTemp) -ItemType Directory -Force
+        try {
+            Invoke-WebRequest -Uri $OfficeSetupUrl -OutFile $setupTemp -UseBasicParsing
+            $sig = Get-AuthenticodeSignature -FilePath $setupTemp
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+                throw 'the download is not validly signed by Microsoft'
+            }
+            Copy-Item -Path $setupTemp -Destination (Join-Path $officeDest 'setup.exe') -Force
+            Write-Ok "Office Deployment Tool setup.exe $((Get-Item $setupTemp).VersionInfo.FileVersion) (signed by Microsoft) copied to $officeDest"
+        }
+        catch {
+            if (Test-Path (Join-Path $officeDest 'setup.exe')) {
+                Write-Warning "Could not download the latest setup.exe ($($_.Exception.Message)). The existing one on the stick is kept."
+            }
+            else { throw "Could not download setup.exe from $OfficeSetupUrl ($($_.Exception.Message)). Office would not install." }
+        }
+        finally { Remove-Item -Path $setupTemp -Force -ErrorAction SilentlyContinue }
+    }
+    # Log collection script in the root of the stick (run it on a deployed device, README section 10)
+    if ($PSCmdlet.ShouldProcess("$($usbLetter):\", 'Copy Collect-DeploymentLogs.ps1')) {
+        Copy-Item -Path $CollectScript -Destination "$($usbLetter):\" -Force
+        Write-Ok "Collect-DeploymentLogs.ps1 copied to $($usbLetter):\"
     }
     # Debloat script: download the pinned version once, verify it, then put it on the stick.
     $debloatCache = Join-Path $DownloadPath 'Downloads\RemoveBloat.ps1'

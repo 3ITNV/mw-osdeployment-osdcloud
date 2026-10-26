@@ -54,15 +54,15 @@ Keep the four scripts and the `Office` folder **together in one folder** (for ex
 | `Start-OSDCloudDeployMenu.ps1` | WinPE on the device | No (starts automatically at boot) | The deployment menu: checks the device, asks what to install and asks for confirmation (`YES`) before anything is erased. |
 | `Deploy-OSDCloud-Win11-25H2.ps1` | WinPE on the device | Via the menu (or manually) | Wipes the disk and installs Windows with languages and updates, and prepares the Office install. Copied to the stick automatically. |
 | `Office\Install-M365Apps.ps1` | The new Windows, before OOBE | No (runs automatically) | Installs Microsoft 365 Apps with `setup.exe` and `installM365BP.xml`. |
-| `Collect-DeploymentLogs.ps1` | A deployed device, after OOBE | **Yes** - when something went wrong, or to verify a test device | Copies all deployment logs to the stick and checks the result (languages, Office, feature update hold, debloat, Wi-Fi password). Put it in the root of the stick. See [section 10](#10-log-files). |
+| `Collect-DeploymentLogs.ps1` | A deployed device, after OOBE | **Yes** - when something went wrong, or to verify a test device | Copies all deployment logs to the stick and checks the result (languages, Office, feature update hold, debloat, Wi-Fi password). The build script puts it in the root of the stick. See [section 10](#10-log-files). |
 
-**The `Office` folder** uses the same `setup.exe` and install XML as our Intune package for Microsoft 365 Apps:
+**The `Office` folder** uses the same install XML as our Intune package for Microsoft 365 Apps:
 
 | File | What it is |
 |---|---|
-| `setup.exe` | Office Deployment Tool (signed by Microsoft) |
 | `installM365BP.xml` | Install configuration: product, languages, update channel, default file formats |
 | `Install-M365Apps.ps1` | Runs `setup.exe` during the deployment, waits for internet, retries once and checks the result |
+| `setup.exe` | **Not in the repo.** The build script downloads the latest Office Deployment Tool from Microsoft's Office CDN on every run, checks the Microsoft signature and puts it on the stick (`.gitignore` keeps it out of Git) |
 
 **Rule of thumb:** on your PC you only run `Initialize-OSDCloudBuild.ps1`. On a device you boot from the stick and use the menu that appears.
 
@@ -71,6 +71,8 @@ Keep the four scripts and the `Office` folder **together in one folder** (for ex
 ## 3. Requirements
 
 **Technician PC (the PC that builds the stick)**
+
+> For the **monthly update** of an existing stick (`-StickOnly`, section 6) you only need a Windows 11 PC with administrator rights, Windows PowerShell 5.1 and internet: no recovery environment, ADK or 20 GB free space.
 
 - Windows 11 with the **recovery environment enabled** (check with `reagentc /info`, it should say `Enabled`)
 - Local administrator rights
@@ -98,7 +100,7 @@ Do this **once**. It takes about 1 to 1.5 hours, mostly downloading.
 
 ### Step 4.1 - Get the scripts
 
-Clone this repo to `C:\Git\mw-osdeployment-osdcloud` (GitHub Desktop: **File > Clone a repository**). You need all of it: the three `.ps1` files **and** the `Office` folder.
+Clone this repo to `C:\Git\mw-osdeployment-osdcloud` (GitHub Desktop: **File > Clone a repository**). You need all of it: the `.ps1` files **and** the `Office` folder (the Office `setup.exe` is downloaded by the build script itself).
 
 ### Step 4.2 - Open the right PowerShell
 
@@ -248,16 +250,21 @@ Choose **one** of the two options.
 
 ### Option A - With the script (recommended)
 
-1. Plug in the OSDCloud stick (only that one).
-2. Open **Windows PowerShell as administrator** (see [step 4.2](#step-42---open-the-right-powershell)).
-3. Run:
+Works on **any Windows 11 PC** with the repo cloned: no previous build, ADK or WinPE needed. Besides the update, it also puts the **latest versions of everything else** on the stick: deployment script, menu, Office files, the newest Office `setup.exe`, debloat and the log collection script. So this is the only maintenance a stick needs.
+
+1. Pull the latest version of the repo (GitHub Desktop: **Fetch origin**, then **Pull**).
+2. Plug in the OSDCloud stick (only that one).
+3. Open **Windows PowerShell as administrator** (see [step 4.2](#step-42---open-the-right-powershell)).
+4. Run:
    ```powershell
    cd C:\Git\mw-osdeployment-osdcloud
    Set-ExecutionPolicy RemoteSigned -Scope Process
-   .\Initialize-OSDCloudBuild.ps1 -LcuPath 'C:\Updates\2026-11'
+   .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\2026-11'
    ```
-4. Steps 1 to 7 are skipped. Step 8 replaces the old update with the new one.
-5. Wait for `=== Done`.
+5. Steps 2 to 7 are skipped. Step 8 replaces the old update with the new one (a few minutes for ~5 GB on a slow stick), step 9 refreshes everything else.
+6. Wait for `=== Done`, then use **Safely Remove Hardware**.
+
+> Without `-StickOnly` the script also checks ADK, OSD module and WinPE first. On the PC that built the stick that is quick (everything is skipped); on any other PC it would build a complete new WinPE (1-1.5 hours).
 
 ### Option B - Manually (no script)
 
@@ -281,11 +288,13 @@ The `LCU` folder must contain **only this month's** `.msu` file(s) and nothing e
 ```
 WinPE (small partition)        <- boot files, do not touch
 OSDCloudUSB (data partition)
+├── Collect-DeploymentLogs.ps1 <- run on a deployed device to collect logs (section 10)
+├── Logs                       <- created by Collect-DeploymentLogs.ps1
 └── OSDCloud
     ├── Languages
     │   ├── LOF                <- language files (filled once)
     │   └── LCU                <- this month's .msu file(s) ONLY
-    ├── Office                 <- setup.exe, installM365BP.xml, Install-M365Apps.ps1
+    ├── Office                 <- setup.exe (downloaded), installM365BP.xml, Install-M365Apps.ps1
     ├── Debloat                <- RemoveBloat.ps1 (Andrew Taylor, pinned version)
     ├── Config
     │   └── Scripts
@@ -565,6 +574,7 @@ Clear-WindowsCorruptMountPoint
 | `-RebuildWinPE` | Rebuilds WinPE even if it already exists |
 | `-RecreateUsb` | Erases and recreates the stick (asks to confirm) |
 | `-RefreshLanguages` | Copies the language files to the stick again |
+| `-StickOnly` | Only updates an existing stick (update, scripts, Office `setup.exe`, debloat); skips ADK, OSD module and WinPE. For the monthly update, on any PC |
 | `-LofIsoPath <file>` | Uses an already downloaded language ISO instead of downloading it |
 
 ---
@@ -614,11 +624,7 @@ Individual logs:
   1. Look at his [commit history](https://github.com/andrew-s-taylor/public/commits/main/De-Bloat/RemoveBloat.ps1) and **read the changes** since our commit. It runs as SYSTEM on customer devices.
   2. Put the new commit ID in `$DebloatUrl`, download that file once and put its fingerprint (`(Get-FileHash .\RemoveBloat.ps1).Hash`) in `$DebloatSha256`.
   3. Test on a test device, then rebuild the sticks (step 9 only) and commit.
-- **Updating the Office Deployment Tool (`Office\setup.exe`)** - Microsoft releases a new version about once a month and recommends always using the latest ([release history](https://learn.microsoft.com/officeupdates/odt-release-history)). To update:
-  1. Download `officedeploymenttool_<version>.exe` from the [Microsoft Download Center](https://www.microsoft.com/download/details.aspx?id=49117).
-  2. Run it, accept the licence and extract it to an empty temporary folder. It only extracts files, it installs nothing.
-  3. Copy **only** `setup.exe` from that folder over `Office\setup.exe`. Ignore the sample `.xml` files.
-  4. Update the Intune package with the same `setup.exe`, run `Initialize-OSDCloudBuild.ps1` (it checks the Microsoft signature) and commit.
+- **Office Deployment Tool (`setup.exe`)** - nothing to do: Microsoft releases a new version about once a month and recommends always using the latest ([release history](https://learn.microsoft.com/officeupdates/odt-release-history)). Step 9 of the build script downloads it from `https://officecdn.microsoft.com/pr/wsus/setup.exe` on every run (also with `-StickOnly`), checks that it is signed by Microsoft and only then replaces the copy on the stick. If the download fails, the existing `setup.exe` on the stick is kept (warning). The Intune package has its own copy of `setup.exe`; update that one separately if you want it current too.
 - Every script starts with a version history. **Bump the version and add a line** for each change.
 - Test with `-WhatIf` and on a test device or VM before using it on customer devices.
 - Commit with a clear message and push to `main`.
