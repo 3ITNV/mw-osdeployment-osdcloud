@@ -33,18 +33,25 @@
     Version  Date        Author          Change
     -------  ----------  --------------  ------------------------------------------------------------
     1.0.0    2026-10-23  <Your name>     Initial version
+    1.0.1    2026-10-24  <Your name>     Fix: crashed at start during SetupComplete because $PSScriptRoot is
+                                         empty in parameter defaults; script folder is now resolved in the body
+    1.0.2    2026-10-25  <Your name>     Fix: Office was reported as failed although setup.exe succeeded:
+                                         O365BusinessEEANoTeamsRetail is registered as O365BusinessRetail
 #>
 
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ConfigFile = (Join-Path $PSScriptRoot 'installM365BP.xml')
+    [string]$ConfigFile   # Default: installM365BP.xml next to this script (set below, not here:
+                          # $PSScriptRoot can be empty in parameter defaults in Windows PowerShell 5.1)
 )
 
 $ErrorActionPreference = 'Stop'
 
 #region Configuration ------------------------------------------------------------------------------
-$SetupExe           = Join-Path $PSScriptRoot 'setup.exe'
+$ScriptFolder       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $ConfigFile) { $ConfigFile = Join-Path $ScriptFolder 'installM365BP.xml' }
+$SetupExe           = Join-Path $ScriptFolder 'setup.exe'
 $LogFolder          = 'C:\OSDCloud\Logs'
 $CdnHost            = 'officecdn.microsoft.com'
 $NetworkWaitMinutes = 10
@@ -59,11 +66,13 @@ function Write-Step {
 }
 
 function Test-ProductInstalled {
-    # Click-to-Run lists the installed products in ProductReleaseIds, for example
-    # "O365BusinessEEANoTeamsRetail".
+    # Click-to-Run lists the installed products in ProductReleaseIds. The "without Teams" variants are
+    # recorded under the base product: O365BusinessEEANoTeamsRetail is installed as O365BusinessRetail
+    # (seen on a test device), so accept both names.
     param([Parameter(Mandatory)][string]$ProductId)
     $ids = (Get-ItemProperty -Path $C2RConfigKey -ErrorAction SilentlyContinue).ProductReleaseIds
-    return ($ids -and ($ids -split ',') -contains $ProductId)
+    $names = @($ProductId, ($ProductId -replace 'EEANoTeams|NoTeams', '')) | Select-Object -Unique
+    return [bool]($ids -and @($ids -split ',' | Where-Object { $_ -in $names }).Count)
 }
 #endregion -----------------------------------------------------------------------------------------
 
@@ -99,7 +108,7 @@ try {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         Write-Step "Running setup.exe /configure (attempt $attempt of $MaxAttempts, this can take 15-30 minutes)"
         $process = Start-Process -FilePath $SetupExe -ArgumentList "/configure `"$ConfigFile`"" `
-            -WorkingDirectory $PSScriptRoot -Wait -PassThru -WindowStyle Hidden
+            -WorkingDirectory $ScriptFolder -Wait -PassThru -WindowStyle Hidden
         Write-Step "setup.exe exit code: $($process.ExitCode)"
         if ($process.ExitCode -eq 0 -and (Test-ProductInstalled -ProductId $productId)) { break }
         if ($attempt -eq $MaxAttempts) {

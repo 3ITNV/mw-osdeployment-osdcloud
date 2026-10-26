@@ -9,14 +9,18 @@
         driver packs, then services the freshly applied OS offline:
           1. Injects ONLY the network (Ethernet/Wi-Fi) drivers that WinPE itself is using, so the
              device has network at first boot / OOBE.
-          2. Adds the nl-NL and fr-FR language packs + language features from a local repository
-             on the OSDCloud USB stick. Because more than one language is installed, OOBE asks the
-             user to pick a language, then region, then keyboard layout.
+          2. Adds the chosen language packs (default nl-NL and fr-FR, -Languages to choose) +
+             language features from a local repository on the OSDCloud USB stick. With more than one
+             language installed, OOBE asks the user to pick a language, unless an Autopilot profile
+             sets "Language (Region)" (then OOBE skips the language page).
           3. Re-applies the latest cumulative update (LCU) after the language packs, as Microsoft
-             requires (otherwise parts of Windows can stay in English). Optional: a missing or
-             outdated LCU on the stick gives a warning, not a failed deployment.
-          4. Stages the Microsoft 365 Apps install (same setup.exe + XML as our Intune package) so it
-             runs at the end of SetupComplete. Skip it with -SkipOffice.
+             requires (otherwise the language packs stay at their RTM version). Only when languages
+             are added; then the pre-flight stops without it. The language pack versions are checked.
+          3b. Holds feature updates at 25H2 (Windows Update policy in the offline image), so
+             Windows Update during SetupComplete does not install 26H2. Lifted before OOBE.
+          4. Stages Andrew Taylor's RemoveBloat.ps1 (debloat, always) and the Microsoft 365 Apps
+             install (same setup.exe + XML as our Intune package, skip with -SkipOffice). Both run at
+             the end of SetupComplete, debloat first.
         All other drivers (and firmware offered through Windows Update) are installed by Windows
         Update during SetupComplete, before OOBE starts.
 
@@ -30,12 +34,18 @@
               <USB>:\OSDCloud\Languages\LCU\   latest cumulative update (.msu) for 25H2 x64
         - Office files on the USB stick, copied by Initialize-OSDCloudBuild.ps1:
               <USB>:\OSDCloud\Office\          setup.exe, installM365BP.xml, Install-M365Apps.ps1
+              <USB>:\OSDCloud\Debloat\         RemoveBloat.ps1 (pinned version, SHA-256 checked)
 
     WARNING: This script is ZERO TOUCH. It wipes the internal disk WITHOUT asking.
              Run it with -WhatIf first to do the pre-flight checks only.
 
 .PARAMETER SkipOffice
     Do not install Microsoft 365 Apps (for customers without Microsoft 365 Apps licences).
+
+.PARAMETER Languages
+    Extra display languages, comma separated, for example 'nl-NL,fr-FR' or 'nl-NL'. Use 'none' for
+    English only (faster: no language packs and no cumulative update from the stick). Default: all
+    languages in $Config.ExtraLanguages. A single string, because the menu passes it with -File.
 
 .EXAMPLE
     # Pre-flight checks only, nothing is wiped or installed
@@ -49,6 +59,10 @@
     # Full deployment without Microsoft 365 Apps
     .\Deploy-OSDCloud-Win11-25H2.ps1 -SkipOffice
 
+.EXAMPLE
+    # English + Dutch only
+    .\Deploy-OSDCloud-Win11-25H2.ps1 -Languages 'nl-NL'
+
 .NOTES
     Version history
     Version  Date        Author          Change
@@ -57,12 +71,32 @@
     1.1.0    2026-10-23  <Your name>     Install Microsoft 365 Apps during SetupComplete; -SkipOffice;
                                          pre-flight internet check before the disk is wiped;
                                          outdated LCU on the stick is a warning instead of a failure
+    1.2.0    2026-10-23  <Your name>     Exit code 1 on failure (used by Start-OSDCloudDeployMenu.ps1)
+    1.3.0    2026-10-23  <Your name>     Always run Andrew Taylor's RemoveBloat.ps1 in SetupComplete,
+                                         before the Office install
+    1.3.1    2026-10-23  <Your name>     Fix: network drivers in use are read from the registry; WMI class
+                                         Win32_PnPSignedDriver does not exist in WinPE ("Invalid class")
+    1.4.0    2026-10-24  <Your name>     Cumulative update is required again (pre-flight stops without it:
+                                         no OOBE language choice); warn when the checkpoint .msu may be
+                                         missing; hold feature updates at 25H2 during the deployment
+                                         (Windows Update offered 26H2), lifted before OOBE
+    1.5.0    2026-10-25  <Your name>     Fallback when the offline LCU install fails (WinPE update agent too
+                                         old for the KB5043080 checkpoint: 0x80070228, XML parse error):
+                                         install it online at the start of SetupComplete; dism.log saved
+    1.6.0    2026-10-25  <Your name>     -Languages (choose extra languages per deployment, 'none' = English
+                                         only). Online LCU fallback removed: the KB5043080 checkpoint fails
+                                         online too (its own 2024 update agent cannot parse the 25H2 compDB),
+                                         while the target LCU does update the language packs. Instead the
+                                         language pack versions are verified after the LCU step.
+    1.7.0    2026-10-25  <Your name>     Remove the plain-text Wi-Fi password OSDCloud leaves in
+                                         C:\Windows\Setup\Scripts\SetupComplete.ps1 (last SetupComplete step)
 #>
 
 #Requires -Version 5.1
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$SkipOffice
+    [switch]$SkipOffice,
+    [string]$Languages
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,7 +108,7 @@ $Config = [ordered]@{
     OSEdition            = 'Pro'
     OSActivation         = 'Retail'
     OSLanguage           = 'en-us'                  # Base language of the downloaded image
-    ExtraLanguages       = @('nl-NL', 'fr-FR')      # Added offline, selectable in OOBE
+    ExtraLanguages       = @('nl-NL', 'fr-FR')      # Default extra languages; -Languages overrides per deployment
     # Language features (FODs) per language. 'Basic' is required, the rest is optional:
     # if one does not exist for a language, the script logs a warning and continues.
     LanguageFeatures     = @('Basic', 'Handwriting', 'OCR', 'Speech', 'TextToSpeech')
@@ -85,11 +119,24 @@ $Config = [ordered]@{
     OfficeDownloadHost   = 'officecdn.microsoft.com:443'       # Microsoft 365 Apps
     OfficeRelativePath   = 'OSDCloud\Office'         # Folder on the USB stick
     OfficeFiles          = @('setup.exe', 'installM365BP.xml', 'Install-M365Apps.ps1')
+    DebloatRelativePath  = 'OSDCloud\Debloat'        # Folder on the USB stick
+    DebloatFile          = 'RemoveBloat.ps1'         # Andrew Taylor, put there by Initialize-OSDCloudBuild.ps1
     # OSDCloud runs SetupComplete.cmd from this folder at the end of SetupComplete (after Windows Update)
     SetupCompleteFolder  = 'C:\OSDCloud\Scripts\SetupComplete'
     LogFolder            = 'C:\OSDCloud\Logs'
     ScratchFolder        = 'C:\OSDCloud\Scratch'
     NetDriverFolder      = 'C:\Drivers\Net'
+    # Hold feature updates during the deployment (Windows Update in SetupComplete offered 26H2).
+    # Lifted again just before OOBE, so Intune feature update policies decide afterwards.
+    FeatureUpdateProduct = 'Windows 11'
+    FeatureUpdateTarget  = '25H2'
+}
+
+# -Languages overrides the default list (one string, because powershell.exe -File passes no arrays)
+if ($PSBoundParameters.ContainsKey('Languages')) {
+    $Config.ExtraLanguages = @(
+        if ($Languages -ne 'none') { $Languages -split '[,; ]+' | Where-Object { $_ } }
+    )
 }
 
 # OSDCloud settings. $Global:MyOSDCloud is merged LAST by Invoke-OSDCloud, so it overrides defaults.
@@ -140,14 +187,47 @@ function Test-LanguageRepo {
         }
         Write-Host "  OK  $lang language pack found"
     }
+    # The LCU is REQUIRED when languages are added: Microsoft requires it after adding language packs,
+    # otherwise they stay at their RTM version. Stop here, before anything is wiped.
     $lcu = @(Get-ChildItem -Path (Join-Path $RepoPath 'LCU') -Filter '*.msu' -File -ErrorAction SilentlyContinue)
     if ($lcu.Count -eq 0) {
-        Write-Warning ('No cumulative update (.msu) found in ' + (Join-Path $RepoPath 'LCU') +
-            '. Deployment will continue, but parts of Windows may stay in English until the next monthly update.')
+        throw ('No cumulative update (.msu) found in ' + (Join-Path $RepoPath 'LCU') + '. It is required when adding ' +
+            'languages. Put the latest update (and its checkpoint) on the stick (README section 5), or deploy English only.')
     }
-    else {
-        $lcu | ForEach-Object { Write-Host "  OK  LCU found: $($_.Name)" }
+    $lcu | ForEach-Object { Write-Host "  OK  LCU found: $($_.Name)" }
+    if ($lcu.Count -eq 1) {
+        # Since 24H2 an LCU can need a checkpoint LCU next to it (KB5043080 for 24H2/25H2 in 2026).
+        # When adding languages it cannot be skipped: without it DISM fails with 0x80073712.
+        Write-Warning ('Only one .msu in the LCU folder. If the Update Catalog download window listed more than one ' +
+            'file (a checkpoint update), all of them must be in this folder.')
     }
+}
+
+function Set-OfflineFeatureUpdateBlock {
+    # Writes the Windows Update policy "Select the target feature update version" into the offline
+    # image, so Windows Update during SetupComplete cannot install a newer feature update (26H2).
+    # Removed again at the end of SetupComplete (Remove-FeatureUpdateBlock.ps1): after OOBE the
+    # customer's Intune feature update policy decides. A local policy would win over Intune.
+    $hiveKey = 'HKLM\OSDOfflineSoftware'
+    & reg.exe load $hiveKey 'C:\Windows\System32\config\SOFTWARE' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not load the registry of the new Windows (reg load exit code $LASTEXITCODE)." }
+    try {
+        $key = "$hiveKey\Policies\Microsoft\Windows\WindowsUpdate"
+        $values = @(
+            @('ProductVersion', 'REG_SZ', $Config.FeatureUpdateProduct),
+            @('TargetReleaseVersion', 'REG_DWORD', '1'),
+            @('TargetReleaseVersionInfo', 'REG_SZ', $Config.FeatureUpdateTarget)
+        )
+        foreach ($value in $values) {
+            & reg.exe add $key /v $value[0] /t $value[1] /d $value[2] /f | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not set $($value[0]) (reg add exit code $LASTEXITCODE)." }
+        }
+    }
+    finally {
+        [gc]::Collect()   # release any handles before unloading the hive
+        & reg.exe unload $hiveKey | Out-Null
+    }
+    Write-Host "  OK  Feature updates held at $($Config.FeatureUpdateProduct) $($Config.FeatureUpdateTarget) until the end of SetupComplete"
 }
 
 function Test-InternetHost {
@@ -184,6 +264,22 @@ function Test-OfficeSource {
     Write-Host "  OK  Office files found: $OfficePath"
 }
 
+function Add-SetupCompleteCommand {
+    # Adds a line that runs $ScriptPath to the SetupComplete.cmd that OSDCloud starts at the end of
+    # SetupComplete. Lines run in the order they are added. Safe to call twice for the same script.
+    param([Parameter(Mandatory)][string]$ScriptPath)
+    $command = '%windir%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' +
+        $ScriptPath + '"'
+    $setupCompleteCmd = Join-Path $Config.SetupCompleteFolder 'SetupComplete.cmd'
+    if (-not (Test-Path $setupCompleteCmd)) {
+        $null = New-Item -Path $Config.SetupCompleteFolder -ItemType Directory -Force
+        Set-Content -Path $setupCompleteCmd -Value '@echo off' -Encoding Ascii
+    }
+    if (-not (Select-String -Path $setupCompleteCmd -Pattern $ScriptPath -SimpleMatch -Quiet)) {
+        Add-Content -Path $setupCompleteCmd -Value $command -Encoding Ascii
+    }
+}
+
 function Export-WinPENetworkDriver {
     # Copies the driver packages of the network adapters WinPE is currently using
     # (Ethernet + Wi-Fi) from the WinPE driver store to $Destination.
@@ -191,9 +287,16 @@ function Export-WinPENetworkDriver {
     # of the .inf inside the driver store folder, so we match them by file hash.
     param([Parameter(Mandatory)][string]$Destination)
 
-    $netDrivers = @(Get-CimInstance -ClassName Win32_PnPSignedDriver |
-        Where-Object { $_.DeviceClass -eq 'NET' -and $_.InfName -like 'oem*.inf' } |
-        Sort-Object -Property InfName -Unique)
+    # Which drivers are in use: read from the registry, NOT from WMI. Win32_PnPSignedDriver does not
+    # exist in WinPE ("Invalid class"). Every installed network adapter has a subkey (0000, 0001, ...)
+    # under the Net device class with the .inf it uses; third-party drivers are oemXX.inf.
+    $netClassKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
+    $netDrivers = @(Get-ChildItem -Path $netClassKey -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -match '^\d{4}$' } |
+        ForEach-Object { Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue } |
+        Where-Object { $_.InfPath -like 'oem*.inf' } |
+        Sort-Object -Property InfPath -Unique |
+        Select-Object @{ n = 'InfName'; e = { $_.InfPath } }, @{ n = 'DeviceName'; e = { $_.DriverDesc } })
 
     if ($netDrivers.Count -eq 0) {
         Write-Warning 'No third-party network drivers in use in WinPE. Windows will rely on its built-in drivers at OOBE.'
@@ -264,7 +367,18 @@ try {
         throw "Language repository '$($Config.RepoRelativePath)\LOF' not found on any drive. Is the OSDCloud USB stick connected?"
     }
     Write-Host "  OK  Language repository: $repo"
-    Test-LanguageRepo -RepoPath $repo -Languages $Config.ExtraLanguages
+    if ($Config.ExtraLanguages.Count -gt 0) {
+        Write-Host "  OK  Extra languages: $($Config.ExtraLanguages -join ', ')"
+        Test-LanguageRepo -RepoPath $repo -Languages $Config.ExtraLanguages
+    }
+    else {
+        Write-Host '  OK  English only: no language packs and no cumulative update from the stick'
+    }
+    $debloatSource = Join-Path (Join-Path (Split-Path $repo -Qualifier) $Config.DebloatRelativePath) $Config.DebloatFile
+    if (-not (Test-Path $debloatSource)) {
+        throw "Debloat script not found: $debloatSource. Re-run Initialize-OSDCloudBuild.ps1 (step 9 puts it on the stick)."
+    }
+    Write-Host "  OK  Debloat script found: $debloatSource"
     if ($SkipOffice) {
         Write-Host '  -SkipOffice: Microsoft 365 Apps will not be installed'
     }
@@ -277,9 +391,13 @@ try {
         Write-Step 'WhatIf: pre-flight checks passed. The real run would now:'
         Write-Host "  - WIPE the internal disk and install $($Config.OSName) $($Config.OSEdition) ($($Config.OSActivation), $($Config.OSLanguage))"
         Write-Host '  - Inject only the Ethernet/Wi-Fi drivers WinPE is using'
-        Write-Host "  - Add languages: $($Config.ExtraLanguages -join ', ') + re-apply the LCU"
+        if ($Config.ExtraLanguages.Count -gt 0) { Write-Host "  - Add languages: $($Config.ExtraLanguages -join ', ') + re-apply the LCU" }
+        else { Write-Host '  - English only (no extra languages)' }
         Write-Host '  - Let Windows Update install all other drivers and firmware during SetupComplete'
+        Write-Host '  - Debloat (RemoveBloat.ps1 by Andrew Taylor) at the end of SetupComplete'
         if (-not $SkipOffice) { Write-Host '  - Install Microsoft 365 Apps at the end of SetupComplete' }
+        Write-Host "  - Hold feature updates at $($Config.FeatureUpdateTarget) during the deployment, lifted before OOBE"
+        Write-Host '  - Remove the plain-text Wi-Fi password OSDCloud leaves behind, before OOBE'
         Write-Host '  - Restart into OOBE (language > region > keyboard)'
         $deploymentOk = $true
         return
@@ -305,6 +423,10 @@ try {
         Add-WindowsDriver -Path 'C:\' -Driver $Config.NetDriverFolder -Recurse -ScratchDirectory $Config.ScratchFolder | Out-Null
         Write-Host "  OK  $count network driver package(s) added"
     }
+
+    #--- 3b. Hold feature updates until the end of SetupComplete ------------------------------------
+    Write-Step "Holding feature updates at $($Config.FeatureUpdateTarget) during the deployment"
+    Set-OfflineFeatureUpdateBlock
 
     #--- 4. Languages -------------------------------------------------------------------------------
     # Re-detect the repo: the USB drive letter can change after the disk was partitioned.
@@ -337,13 +459,15 @@ try {
     }
 
     #--- 5. Re-apply the cumulative update ---------------------------------------------------------
-    # Microsoft: after adding a language pack the LCU must be reinstalled. Windows Update will NOT
-    # offer an LCU that is already installed, so this has to happen here.
-    # The LCU on the stick is "nice to have": when it is missing or older than the update already in
-    # the downloaded image, we warn and continue. Windows Update in SetupComplete installs any newer
-    # LCU, which also updates the languages. At worst some text stays English until next Patch Tuesday.
-    $lcuFolder = Join-Path $repo 'LCU'
-    if (@(Get-ChildItem -Path $lcuFolder -Filter '*.msu' -File -ErrorAction SilentlyContinue).Count -gt 0) {
+    # Microsoft: after adding a language pack the LCU must be reinstalled, otherwise the language packs
+    # stay at their RTM version (10.0.26100.1). Windows Update will NOT offer an LCU that is already
+    # installed, so this has to happen here. Only needed when languages were added.
+    # Known in October 2026: the KB5043080 checkpoint .msu fails with 0x80070228 (its own 2024 update
+    # agent cannot parse the 25H2 compDB: "XML parse error ... Type=UUPProduct"), offline AND online.
+    # The target LCU (KB5127648) still installs and does update the language packs (tested: nl-NL and
+    # fr-FR at 10.0.26100.9711). So a failure here is a warning; what counts is the version check below.
+    if ($Config.ExtraLanguages.Count -gt 0) {
+        $lcuFolder = Join-Path $repo 'LCU'
         Write-Step 'Re-applying the cumulative update (this can take 10-20 minutes)'
         try {
             # Passing the folder lets DISM install checkpoint + latest update in the right order.
@@ -351,21 +475,48 @@ try {
             Write-Host '  OK  Cumulative update applied'
         }
         catch {
-            # 0x800F081E = CBS_E_NOT_APPLICABLE: the image already has a newer update than the stick.
-            # Any other error (corrupt file, disk problem) still stops the deployment.
             $hresult = '{0:X8}' -f $_.Exception.HResult
-            if ($hresult -ne '800F081E' -and $_.Exception.Message -notmatch 'not applicable') { throw }
-            Write-Warning ('The cumulative update on the stick is older than the one already in the Windows image ' +
-                '(not applicable). Skipped. Put the latest update on the stick to avoid English text in some places.')
+            if ($hresult -eq '800F081E' -or $_.Exception.Message -match 'not applicable') {
+                Write-Warning ('The cumulative update on the stick is older than the one already in the Windows image ' +
+                    '(not applicable). Put the latest update on the stick.')
+            }
+            else {
+                Write-Warning "Part of the cumulative update failed (0x$hresult): $($_.Exception.Message.Trim())"
+                $null = New-Item -Path $Config.LogFolder -ItemType Directory -Force
+                Copy-Item -Path 'X:\Windows\Logs\DISM\dism.log' -Destination (Join-Path $Config.LogFolder 'dism-offline-LCU.log') -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # What matters: are the added language packs updated past their RTM version?
+        Write-Step 'Checking the language pack versions'
+        $lpPackages = @(Get-WindowsPackage -Path 'C:\' | Where-Object {
+            $_.PackageName -like '*Client-LanguagePack-Package*' -and $_.PackageState -in 'Installed', 'InstallPending' })
+        foreach ($lang in $Config.ExtraLanguages) {
+            $versions = @($lpPackages | ForEach-Object {
+                if ($_.PackageName -match "~$([regex]::Escape($lang))~(\d+\.\d+\.\d+\.\d+)$") { [version]$Matches[1] } })
+            $newest = $versions | Sort-Object -Descending | Select-Object -First 1
+            if ($newest -and $newest -gt [version]'10.0.26100.1') { Write-Host "  OK  $lang language pack at $newest" }
+            else {
+                Write-Warning ("$lang language pack is still at its original version ($newest): the cumulative update did not " +
+                    'update it. Some Windows text may stay in English. Check the update files on the stick.')
+            }
         }
     }
-    else {
-        Write-Warning 'No LCU in the repository. Skipped. Some text may stay in English until the next monthly update.'
-    }
 
-    #--- 6. Microsoft 365 Apps ---------------------------------------------------------------------
-    # Office cannot be installed offline from WinPE. We stage the files and let OSDCloud's
-    # SetupComplete run them in the new Windows, after Windows Update and before OOBE.
+    #--- 6. Debloat + Microsoft 365 Apps -----------------------------------------------------------
+    # Both need the full Windows, not WinPE. We stage the files and let OSDCloud's SetupComplete run
+    # them in the new Windows, after Windows Update and before OOBE. Debloat goes first: it removes
+    # consumer Office editions, so it must never run after our Office install.
+    # A failure of either does not stop the other or OOBE (each line in SetupComplete.cmd runs on its own).
+
+    Write-Step 'Staging debloat for SetupComplete'
+    $debloatDest = Join-Path $Config.SetupCompleteFolder 'Debloat'
+    $null = New-Item -Path $debloatDest -ItemType Directory -Force
+    Copy-Item -Path (Join-Path (Join-Path (Split-Path $repo -Qualifier) $Config.DebloatRelativePath) $Config.DebloatFile) `
+        -Destination $debloatDest -Force
+    Add-SetupCompleteCommand -ScriptPath (Join-Path $debloatDest $Config.DebloatFile)
+    Write-Host "  OK  Debloat staged in $debloatDest"
+
     if (-not $SkipOffice) {
         Write-Step 'Staging Microsoft 365 Apps install for SetupComplete'
         $officeSource = Join-Path (Split-Path $repo -Qualifier) $Config.OfficeRelativePath
@@ -374,21 +525,69 @@ try {
         foreach ($file in $Config.OfficeFiles) {
             Copy-Item -Path (Join-Path $officeSource $file) -Destination $officeDest -Force
         }
-
-        $command = '%windir%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' +
-            (Join-Path $officeDest 'Install-M365Apps.ps1') + '"'
-        $setupCompleteCmd = Join-Path $Config.SetupCompleteFolder 'SetupComplete.cmd'
-        if (Test-Path $setupCompleteCmd) {
-            # Another SetupComplete.cmd was already staged: add our line instead of replacing it.
-            if (-not (Select-String -Path $setupCompleteCmd -Pattern 'Install-M365Apps.ps1' -SimpleMatch -Quiet)) {
-                Add-Content -Path $setupCompleteCmd -Value $command -Encoding Ascii
-            }
-        }
-        else {
-            Set-Content -Path $setupCompleteCmd -Value '@echo off', $command -Encoding Ascii
-        }
+        Add-SetupCompleteCommand -ScriptPath (Join-Path $officeDest 'Install-M365Apps.ps1')
         Write-Host "  OK  Office staged in $officeDest"
     }
+
+    # Last line of SetupComplete.cmd: lift the feature update hold from step 3b again, so it never
+    # outlives the deployment (a local policy would override the customer's Intune feature update policy).
+    Write-Step 'Staging removal of the feature update hold for the end of SetupComplete'
+    $releaseScript = Join-Path $Config.SetupCompleteFolder 'Remove-FeatureUpdateBlock.ps1'
+    Set-Content -Path $releaseScript -Encoding Ascii -Value @'
+# Generated by Deploy-OSDCloud-Win11-25H2.ps1. Runs at the end of SetupComplete, before OOBE.
+# Removes the feature update hold that the deployment set, so Intune decides from now on.
+Start-Transcript -Path "C:\OSDCloud\Logs\Remove-FeatureUpdateBlock_$(Get-Date -Format 'yyyyMMdd-HHmmss').log" | Out-Null
+$key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+foreach ($name in 'ProductVersion', 'TargetReleaseVersion', 'TargetReleaseVersionInfo') {
+    Remove-ItemProperty -Path $key -Name $name -ErrorAction SilentlyContinue
+}
+# Remove the key itself only if nothing else is configured in it
+$item = Get-Item -Path $key -ErrorAction SilentlyContinue
+if ($item -and $item.ValueCount -eq 0 -and $item.SubKeyCount -eq 0) { Remove-Item -Path $key -Force }
+$left = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+if ($left.TargetReleaseVersion -or $left.TargetReleaseVersionInfo) { Write-Output 'FAILED: feature update hold is still present' }
+else { Write-Output 'OK: feature update hold removed' }
+Stop-Transcript | Out-Null
+'@
+    Add-SetupCompleteCommand -ScriptPath $releaseScript
+    Write-Host "  OK  Hold is lifted at the end of SetupComplete ($releaseScript)"
+
+    # Very last line: remove the Wi-Fi password OSDCloud leaves behind. OSDCloud writes
+    # 'Set-WiFi -SSID "..." -PSK "<password in plain text>"' into C:\Windows\Setup\Scripts\SetupComplete.ps1
+    # to rebuild the Wi-Fi connection. By the time this runs that line has been executed, and
+    # PowerShell loaded the whole script at the start, so editing the file is safe. The Wi-Fi profile
+    # itself stays (Windows stores its key protected): OOBE and Autopilot need the connection.
+    Write-Step 'Staging removal of the plain-text Wi-Fi password for the end of SetupComplete'
+    $wifiScript = Join-Path $Config.SetupCompleteFolder 'Remove-WiFiPassword.ps1'
+    Set-Content -Path $wifiScript -Encoding Ascii -Value @'
+# Generated by Deploy-OSDCloud-Win11-25H2.ps1. Runs as the last step of SetupComplete, before OOBE.
+# Removes the plain-text Wi-Fi password that OSDCloud leaves in its SetupComplete files and logs.
+# The password itself is never written to this log.
+Start-Transcript -Path "C:\OSDCloud\Logs\Remove-WiFiPassword_$(Get-Date -Format 'yyyyMMdd-HHmmss').log" | Out-Null
+$pattern = '(-PSK\s+")(?!\*+"|<removed after deployment>")[^"]*(")'   # a real value: not OSD's "*****" mask, not our marker
+$files = @(Get-ChildItem -Path 'C:\Windows\Setup\Scripts', 'C:\OSDCloud\Logs', 'C:\Windows\Temp\osdcloud-logs' `
+    -Recurse -File -Include *.ps1, *.cmd, *.log, *.txt, *.json -ErrorAction SilentlyContinue)
+$cleaned = 0
+foreach ($file in $files) {
+    $text = Get-Content -Path $file.FullName -Raw -ErrorAction SilentlyContinue
+    if ($text -and $text -match $pattern) {
+        try {
+            $text -replace $pattern, '$1<removed after deployment>$2' | Set-Content -Path $file.FullName -NoNewline -ErrorAction Stop
+            Write-Output "Removed Wi-Fi password from $($file.FullName)"
+            $cleaned++
+        }
+        catch { Write-Output "FAILED to clean $($file.FullName): $($_.Exception.Message)" }
+    }
+}
+# OSDCloud's own copy (normally already removed by its SetupComplete)
+Remove-Item -Path 'C:\OSDCloud\Configs\WiFi.JSON' -Force -ErrorAction SilentlyContinue
+$left = @($files | Where-Object { (Get-Content -Path $_.FullName -Raw -ErrorAction SilentlyContinue) -match $pattern })
+if ($left.Count -eq 0) { Write-Output "OK: no plain-text Wi-Fi password left ($cleaned file(s) cleaned)" }
+else { Write-Output "FAILED: Wi-Fi password still in $($left.FullName -join ', ')" }
+Stop-Transcript | Out-Null
+'@
+    Add-SetupCompleteCommand -ScriptPath $wifiScript
+    Write-Host "  OK  Wi-Fi password is removed at the end of SetupComplete ($wifiScript)"
 
     #--- 7. Verify ---------------------------------------------------------------------------------
     Write-Step 'Verifying installed languages'
@@ -422,4 +621,6 @@ if ($deploymentOk -and -not $WhatIfPreference) {
     Start-Sleep -Seconds 10
     Restart-Computer -Force
 }
+# Exit code 1 on failure, so Start-OSDCloudDeployMenu.ps1 can tell whether the (pre-flight) run passed
+if (-not $deploymentOk) { exit 1 }
 #endregion -----------------------------------------------------------------------------------------

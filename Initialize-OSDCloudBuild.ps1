@@ -20,16 +20,18 @@
              or update an existing one
           7. Download the Languages and Optional Features ISO, if not provided
           8. Fill the language repository on the stick (Prepare-OSDCloudLanguageRepo.ps1)
-          9. Copy the deployment script and the Office folder (Microsoft 365 Apps) to the stick
+          9. Copy the deployment script, the start menu (StartNet), the Office folder
+             (Microsoft 365 Apps) and the debloat script (pinned download, SHA-256 checked) to the stick
 
-        Monthly maintenance (recommended, not required): download the new cumulative update and
-        re-run with -LcuPath. Only the update on the stick is replaced; everything else is skipped.
-        A missing or outdated update does not stop deployments, it only gives a warning.
+        Monthly maintenance (required): download the new cumulative update (ALL .msu files, including
+        the checkpoint) and re-run with -LcuPath. Only the update on the stick is replaced; everything
+        else is skipped. Without it, deployments stop at the pre-flight (no OOBE language choice).
 
         Keep these files in the same folder:
             Initialize-OSDCloudBuild.ps1
             Prepare-OSDCloudLanguageRepo.ps1
             Deploy-OSDCloud-Win11-25H2.ps1
+            Start-OSDCloudDeployMenu.ps1
             Office\   (setup.exe, installM365BP.xml, Install-M365Apps.ps1)
 
     Author:  <Your name> - 3-IT
@@ -87,6 +89,11 @@
                                          on an existing workspace)
     1.2.1    2026-10-23  <Your name>     Fix: step 5 crashed when dell.com refused the driver pack lookup
                                          (OSD bug, empty fallback URL); discard leftover boot.wim mounts
+    1.3.0    2026-10-23  <Your name>     Copy Start-OSDCloudDeployMenu.ps1 to OSDCloud\Config\Scripts\StartNet
+                                         (deployment menu starts automatically, asks for confirmation)
+    1.4.0    2026-10-23  <Your name>     Download Andrew Taylor's RemoveBloat.ps1 (pinned commit, SHA-256
+                                         checked) to OSDCloud\Debloat on the stick
+    1.4.1    2026-10-24  <Your name>     Texts only: the cumulative update on the stick is required again
 #>
 
 #Requires -Version 5.1
@@ -126,8 +133,15 @@ $WinPEInputLocale = '0813:00000813'
 $WinPEMarkerFile = Join-Path $WorkspacePath '.3it-winpe-netdrivers.done'
 $DeployScript    = Join-Path $PSScriptRoot 'Deploy-OSDCloud-Win11-25H2.ps1'
 $PrepareScript   = Join-Path $PSScriptRoot 'Prepare-OSDCloudLanguageRepo.ps1'
+$MenuScript      = Join-Path $PSScriptRoot 'Start-OSDCloudDeployMenu.ps1'
 $OfficeFolder    = Join-Path $PSScriptRoot 'Office'
 $OfficeFiles     = @('setup.exe', 'installM365BP.xml', 'Install-M365Apps.ps1')
+# Debloat: Andrew Taylor's RemoveBloat.ps1 (GPL-3.0, https://github.com/andrew-s-taylor/public).
+# Not stored in this repo: downloaded at ONE fixed commit and checked against its SHA-256, so a change
+# upstream never reaches our devices unnoticed. To update: pick a new commit, review the changes,
+# and replace both values below (README section 11).
+$DebloatUrl      = 'https://raw.githubusercontent.com/andrew-s-taylor/public/ce39945d999568ee67aec9f7571250293fde9689/De-Bloat/RemoveBloat.ps1'
+$DebloatSha256   = '4500FE5538471CC2DF8D0FDE5AD23BFEF037561E095F27A3E341E744E69AF039'   # Version 5.6.5
 #endregion -----------------------------------------------------------------------------------------
 
 #region Helper functions ---------------------------------------------------------------------------
@@ -264,7 +278,7 @@ try {
         throw 'Run this on Windows 11. The WinRE-based WinPE (needed for Wi-Fi) is taken from this PC.'
     }
     Write-Ok 'Windows 11'
-    foreach ($file in $DeployScript, $PrepareScript) {
+    foreach ($file in $DeployScript, $PrepareScript, $MenuScript) {
         if (-not (Test-Path $file)) { throw "Missing file next to this script: $(Split-Path $file -Leaf)" }
     }
     Write-Ok 'Deploy and Prepare scripts found'
@@ -468,7 +482,7 @@ try {
 
     $lcuOnStick = @(Get-ChildItem -Path "$($usbLetter):\OSDCloud\Languages\LCU" -Filter '*.msu' -File -ErrorAction SilentlyContinue)
     if ($lcuOnStick.Count -eq 0) {
-        Write-Warning 'No cumulative update on the stick yet (recommended, not required). Opening the Microsoft Update Catalog in your browser.'
+        Write-Warning 'No cumulative update on the stick yet (REQUIRED for deployments). Opening the Microsoft Update Catalog in your browser.'
         Write-Warning 'Download the newest "Cumulative Update for Windows 11 Version 25H2 for x64-based Systems" (.msu) to a folder, then re-run with -LcuPath <folder>.'
         if (-not $WhatIfPreference) { Start-Process $Urls.Catalog }
     }
@@ -476,18 +490,26 @@ try {
         $lcuOnStick | ForEach-Object { Write-Ok "LCU on stick: $($_.Name) (copied $($_.LastWriteTime.ToString('yyyy-MM-dd')))" }
         $oldest = ($lcuOnStick | Measure-Object -Property LastWriteTime -Minimum).Minimum
         if ($oldest -lt (Get-Date).AddDays(-35)) {
-            Write-Warning ('The cumulative update on the stick is older than 5 weeks. Deployments still work, but download ' +
-                'the latest one and re-run with -LcuPath to keep all language text up to date.')
+            Write-Warning ('The cumulative update on the stick is older than 5 weeks. Download the latest one (all .msu files) ' +
+                'and re-run with -LcuPath, otherwise the added language packs may not be updated.')
         }
     }
 
     #--- 9. Deployment script ----------------------------------------------------------------------
-    Write-Step '9/9  Deployment script and Office files on the stick'
+    Write-Step '9/9  Deployment script, start menu, Office and debloat files on the stick'
     $scriptDest = "$($usbLetter):\OSDCloud\Scripts"
     if ($PSCmdlet.ShouldProcess($scriptDest, 'Copy Deploy-OSDCloud-Win11-25H2.ps1')) {
         $null = New-Item -Path $scriptDest -ItemType Directory -Force
         Copy-Item -Path $DeployScript -Destination $scriptDest -Force
         Write-Ok "Copied to $scriptDest"
+    }
+    # OSDCloud runs every script in StartNet when WinPE boots. Only the MENU goes here, never the
+    # deploy script itself: the menu asks for confirmation before anything is erased.
+    $startNetDest = "$($usbLetter):\OSDCloud\Config\Scripts\StartNet"
+    if ($PSCmdlet.ShouldProcess($startNetDest, 'Copy Start-OSDCloudDeployMenu.ps1')) {
+        $null = New-Item -Path $startNetDest -ItemType Directory -Force
+        Copy-Item -Path $MenuScript -Destination $startNetDest -Force
+        Write-Ok "Start menu copied to $startNetDest"
     }
     # Not in OSDCloud\Config\Scripts: OSDCloud would pick that up on its own, also with -SkipOffice.
     $officeDest = "$($usbLetter):\OSDCloud\Office"
@@ -498,11 +520,27 @@ try {
         }
         Write-Ok "Office files copied to $officeDest"
     }
+    # Debloat script: download the pinned version once, verify it, then put it on the stick.
+    $debloatCache = Join-Path $DownloadPath 'Downloads\RemoveBloat.ps1'
+    $debloatDest  = "$($usbLetter):\OSDCloud\Debloat"
+    if ($PSCmdlet.ShouldProcess($debloatDest, 'Download (pinned version) and copy RemoveBloat.ps1')) {
+        if (-not (Test-Path $debloatCache) -or (Get-FileHash $debloatCache -Algorithm SHA256).Hash -ne $DebloatSha256) {
+            $null = New-Item -Path (Split-Path $debloatCache) -ItemType Directory -Force
+            Invoke-WebRequest -Uri $DebloatUrl -OutFile $debloatCache -UseBasicParsing
+        }
+        $hash = (Get-FileHash $debloatCache -Algorithm SHA256).Hash
+        if ($hash -ne $DebloatSha256) {
+            Remove-Item $debloatCache -Force
+            throw "RemoveBloat.ps1 does not match the expected SHA-256 (got $hash). Not copied to the stick. See README section 11."
+        }
+        $null = New-Item -Path $debloatDest -ItemType Directory -Force
+        Copy-Item -Path $debloatCache -Destination $debloatDest -Force
+        Write-Ok "Debloat script (pinned, SHA-256 verified) copied to $debloatDest"
+    }
 
     Write-Step 'Done'
-    Write-Host '  Next: boot a test device (or Hyper-V Gen2 VM) from the stick and in WinPE run:' -ForegroundColor White
-    Write-Host '    PowerShell -ExecutionPolicy Bypass -File <USB>:\OSDCloud\Scripts\Deploy-OSDCloud-Win11-25H2.ps1 -WhatIf' -ForegroundColor Yellow
-    Write-Host '  (find <USB> in WinPE with Get-Volume, label OSDCloudUSB)' -ForegroundColor DarkGray
+    Write-Host '  Next: boot a test device (or Hyper-V Gen2 VM) from the stick. The deployment menu starts' -ForegroundColor White
+    Write-Host '  automatically and asks for confirmation (type YES) before anything is erased.' -ForegroundColor White
 }
 catch {
     Write-Host ''
