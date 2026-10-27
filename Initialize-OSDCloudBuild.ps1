@@ -79,7 +79,7 @@
 
 .EXAMPLE
     # Monthly, on any PC: new cumulative update + latest scripts, setup.exe and debloat on the stick
-    .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\2026-11'
+    .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\25H2'
 
 .NOTES
     Version history
@@ -106,6 +106,9 @@
                                          Office CDN instead of keeping it in the repo; copy
                                          Collect-DeploymentLogs.ps1 to the stick root; -StickOnly for the
                                          monthly update without ADK/OSD/WinPE
+    1.5.1    2026-10-27  <Your name>     Unblock the repo files in pre-flight, so step 8 does not fail with
+                                         "not digitally signed" when the repo was copied or downloaded;
+                                         examples use the fixed update folder C:\Updates\25H2
 #>
 
 #Requires -Version 5.1
@@ -299,6 +302,10 @@ try {
         if (-not (Test-Path $file)) { throw "Missing file next to this script: $(Split-Path $file -Leaf)" }
     }
     Write-Ok 'Deploy, Prepare, menu and log collection scripts found'
+    # Files copied from Teams, OneDrive, e-mail or a ZIP download carry the "downloaded from the
+    # internet" mark; under RemoteSigned the Prepare script would then refuse to run in step 8.
+    Get-ChildItem -Path $PSScriptRoot -Recurse -File | Unblock-File -WhatIf:$false
+    Write-Ok 'Repo files unblocked'
     foreach ($file in $OfficeFiles) {
         if (-not (Test-Path (Join-Path $OfficeFolder $file))) { throw "Missing file: Office\$file" }
     }

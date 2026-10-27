@@ -14,14 +14,13 @@ When a device is imaged with this stick, the user can choose **English, Dutch or
 2. [Files in this repo](#2-files-in-this-repo)
 3. [Requirements](#3-requirements)
 4. [First-time setup (build the USB stick)](#4-first-time-setup-build-the-usb-stick)
-5. [Monthly: download the cumulative update (.msu)](#5-monthly-download-the-cumulative-update-msu)
-6. [Monthly: put the update on the stick](#6-monthly-put-the-update-on-the-stick)
-7. [Deploying a device](#7-deploying-a-device)
-8. [What happens during a deployment](#8-what-happens-during-a-deployment)
-9. [Troubleshooting](#9-troubleshooting)
-10. [Log files](#10-log-files)
-11. [Changing the scripts](#11-changing-the-scripts)
-12. [No-secrets policy](#12-no-secrets-policy)
+5. [OPTIONAL - Monthly: put the update on the stick](#5-optional---monthly-put-the-update-on-the-stick)
+6. [Deploying a device](#6-deploying-a-device)
+7. [What happens during a deployment](#7-what-happens-during-a-deployment)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Log files](#9-log-files)
+10. [Changing the scripts](#10-changing-the-scripts)
+11. [No-secrets policy](#11-no-secrets-policy)
 
 ---
 
@@ -31,11 +30,11 @@ When a device is imaged with this stick, the user can choose **English, Dutch or
 |---|---|
 | Windows version | Windows 11 25H2, x64 |
 | Edition / license | Pro, Retail (activates with the key in the device firmware, if present) |
-| Languages | English (base), plus Dutch (nl-NL) and/or French (fr-FR) - **chosen per device in the menu**; the user picks one in OOBE. There are no separate Belgian language packs: Belgium is set as region and keyboard. **Autopilot:** set "Language (Region)" in the Autopilot profile to **User select**, otherwise OOBE skips the language choice (see [step 7.8](#step-78---after-the-restart-setupcomplete-and-oobe)) |
+| Languages | English (base), plus Dutch (nl-NL) and/or French (fr-FR) - **chosen per device in the menu**; the user picks one in OOBE. There are no separate Belgian language packs: Belgium is set as region and keyboard. **Autopilot:** set "Language (Region)" in the Autopilot profile to **User select**, otherwise OOBE skips the language choice (see [step 6.6](#step-66---after-the-restart-setupcomplete-and-oobe)) |
 | Keyboard | Chosen by the user in OOBE (for example Belgian period / Belgian French) |
 | Drivers during imaging | Only Ethernet and Wi-Fi (copied from WinPE) |
 | Other drivers + firmware | Installed by Windows Update before OOBE starts |
-| Updates | Cumulative update from the stick (**required**, see section 5) + Windows Update |
+| Updates | Cumulative update from the stick (**required**, see step 4.4) + Windows Update |
 | Feature updates | Held at 25H2 during the deployment (Windows Update offered 26H2), lifted again before OOBE. After that, the customer's Intune feature update policy decides |
 | Office | Microsoft 365 Apps for business, without Teams (`O365BusinessEEANoTeamsRetail`), 64-bit, Monthly Enterprise Channel, en/nl/fr. Skip with `-SkipOffice` |
 | Debloat | Always: [RemoveBloat.ps1 by Andrew Taylor](https://github.com/andrew-s-taylor/public/tree/main/De-Bloat) removes consumer apps (Xbox, Solitaire, News, Clipchamp, ...), Copilot and Recall, and clears the Start menu pins. The Microsoft 365 Copilot app and our Office stay |
@@ -54,7 +53,7 @@ Keep the four scripts and the `Office` folder **together in one folder** (for ex
 | `Start-OSDCloudDeployMenu.ps1` | WinPE on the device | No (starts automatically at boot) | The deployment menu: checks the device, asks what to install and asks for confirmation (`YES`) before anything is erased. |
 | `Deploy-OSDCloud-Win11-25H2.ps1` | WinPE on the device | Via the menu (or manually) | Wipes the disk and installs Windows with languages and updates, and prepares the Office install. Copied to the stick automatically. |
 | `Office\Install-M365Apps.ps1` | The new Windows, before OOBE | No (runs automatically) | Installs Microsoft 365 Apps with `setup.exe` and `installM365BP.xml`. |
-| `Collect-DeploymentLogs.ps1` | A deployed device, after OOBE | **Yes** - when something went wrong, or to verify a test device | Copies all deployment logs to the stick and checks the result (languages, Office, feature update hold, debloat, Wi-Fi password). The build script puts it in the root of the stick. See [section 10](#10-log-files). |
+| `Collect-DeploymentLogs.ps1` | A deployed device, after OOBE | **Yes** - when something went wrong, or to verify a test device | Copies all deployment logs to the stick and checks the result (languages, Office, feature update hold, debloat, Wi-Fi password). The build script puts it in the root of the stick. See [section 9](#9-log-files). |
 
 **The `Office` folder** uses the same install XML as our Intune package for Microsoft 365 Apps:
 
@@ -72,14 +71,14 @@ Keep the four scripts and the `Office` folder **together in one folder** (for ex
 
 **Technician PC (the PC that builds the stick)**
 
-> For the **monthly update** of an existing stick (`-StickOnly`, section 6) you only need a Windows 11 PC with administrator rights, Windows PowerShell 5.1 and internet: no recovery environment, ADK or 20 GB free space.
+> For the **monthly update** of an existing stick (`-StickOnly`, section 5) you only need a Windows 11 PC with administrator rights, Windows PowerShell 5.1 and internet: no recovery environment, ADK or 20 GB free space.
 
 - Windows 11 with the **recovery environment enabled** (check with `reagentc /info`, it should say `Enabled`)
 - Local administrator rights
 - **Windows PowerShell 5.1** (the blue one, `powershell.exe`). **Not** PowerShell 7 (`pwsh.exe`).
 - At least 20 GB free on `C:`
 - Internet access
-- If your security software blocks the build (see [Troubleshooting](#9-troubleshooting)), use a dedicated build VM instead.
+- If your security software blocks the build (see [Troubleshooting](#8-troubleshooting)), use a dedicated build VM instead.
 
 **USB stick**
 
@@ -105,16 +104,21 @@ Clone this repo to `C:\Git\mw-osdeployment-osdcloud` (GitHub Desktop: **File > C
 ### Step 4.2 - Open the right PowerShell
 
 1. Click **Start**, type `Windows PowerShell`.
-2. Right-click **Windows PowerShell** (not "PowerShell 7") and choose **Run as administrator**.
+2. Right-click **Windows PowerShell** and choose **Run as administrator**. Not "PowerShell" (that is PowerShell 7), "Windows PowerShell ISE" or "Windows PowerShell (x86)".
+
+   ![Start menu: right-click Windows PowerShell and choose Run as administrator](docs/images/01-powershell-run-as-admin.png)
+
 3. Check you have the right one:
    ```powershell
-   $PSVersionTable.PSVersion
+   $PSVersionTable
    ```
-   The first number must be **5**.
+   `PSVersion` must start with **5.1** and `PSEdition` must be **Desktop**. The window title starts with **Administrator:**.
+
+   ![PSVersionTable showing PSVersion 5.1 and PSEdition Desktop](docs/images/02-psversiontable.png)
 
 ### Step 4.3 - Allow the scripts to run
 
-Files downloaded from the internet (for example as a ZIP) are blocked by Windows. Unblock them once, including the `Office` folder:
+Windows marks files that came from the internet. That includes a ZIP download from GitHub, and also files copied from Teams, OneDrive, SharePoint or an e-mail. PowerShell refuses to run marked scripts, with errors like `is not digitally signed` or `Do you want to run ...?`. Files cloned with GitHub Desktop are not marked, but running the commands below never hurts:
 
 ```powershell
 cd C:\Git\mw-osdeployment-osdcloud
@@ -122,11 +126,85 @@ Get-ChildItem -Recurse -File | Unblock-File
 Set-ExecutionPolicy RemoteSigned -Scope Process
 ```
 
-The last line only applies to this PowerShell window. You need to repeat it each time you open a new window.
+- **Line 2** removes the mark from every file in the repo, including the `Office` folder. You only need it once per copy of the repo.
+- **Line 3** allows scripts to run, but only in this PowerShell window. Repeat it each time you open a new window. It asks `Do you want to change the execution policy?`: type `Y` and press Enter.
+- The build script also unblocks the repo files itself (step 1). You still need line 2 for the build script itself to start.
+
+![Unblock-File and Set-ExecutionPolicy, answering Y to the execution policy question](docs/images/03-unblock-executionpolicy.png)
 
 ### Step 4.4 - Download the cumulative update (required)
 
-Follow [section 5](#5-monthly-download-the-cumulative-update-msu) and save **all** `.msu` file(s) (usually two: the update and its checkpoint) to `C:\Updates\25H2`. Without them a deployment stops at the pre-flight check.
+Microsoft releases a new cumulative update on the **second Tuesday of every month** ("Patch Tuesday"). An update on the stick is **required** (the first build puts it there). Refreshing it each month is optional but recommended ([section 5](#5-optional---monthly-put-the-update-on-the-stick)).
+
+> **Why it is required:** the deployment adds Dutch and/or French to Windows. Microsoft requires the cumulative update to be installed again after adding languages; without it the language packs stay at their original version (10.0.26100.1) and parts of Windows can stay in English. Windows Update does not fix it, because it never offers an update that is already installed. Only needed when languages are added: "English only" in the menu does not use it.
+>
+> **What happens if it is missing:** the deployment stops at the pre-flight check, before anything is erased.
+>
+> **What happens if it is older than the Windows image:** OSDCloud downloads the newest Windows image it knows. If that image already contains a newer update than the stick, the update on the stick is skipped with a yellow warning ("not applicable") and the language packs may not be updated. Keep the stick current to avoid this.
+
+> **Known issue, October 2026:** the checkpoint `KB5043080` fails with `0x80070228`, in WinPE and in Windows itself. It brings its own update component from 2024 (`UpdateAgent Build version 10.0.26100.1742` in `dism.log`), which cannot read the current 25H2 format (`XML parse error ... Type="UUPProduct"`). The October update `KB5127648` itself still installs and does update the language packs (tested: nl-NL and fr-FR at 10.0.26100.9711). The deployment therefore shows a yellow warning and then checks the language pack versions ("Checking the language pack versions"): `OK` there means the languages are fine. Keep both files on the stick anyway, as Microsoft prescribes.
+
+> **Example - October 2026:** the update is **KB5127648** and the download window lists **two** files: `windows11.0-kb5043080-x64_...msu` (the checkpoint) and `windows11.0-kb5127648-x64_...msu`. Both must be on the stick. With only the second one, the deployment fails with `0x80073712`.
+
+#### 1. Open the Microsoft Update Catalog
+
+Go to <https://www.catalog.update.microsoft.com>
+
+#### 2. Search
+
+Type exactly this in the search box and press Enter:
+
+```
+Cumulative Update for Windows 11 Version 25H2 for x64-based Systems
+```
+
+![Microsoft Update Catalog with the search text in the search box](docs/images/05-catalog-search.png)
+
+#### 3. Pick the right line
+
+Click the **Last Updated** column header so the newest is at the top. Choose the newest line that matches **all** of these:
+
+| Must contain | Must NOT contain |
+|---|---|
+| `Cumulative Update for Windows 11 Version 25H2` | `Preview` |
+| `x64-based Systems` | `arm64` |
+| | `.NET Framework` |
+| | `Dynamic Update` |
+| | `Server` |
+
+Example of a correct title (the date and KB number change every month):
+
+```
+2026-10 Cumulative Update for Windows 11 Version 25H2 for x64-based Systems (KB5xxxxxx)
+```
+
+![Search results: the newest 25H2 x64 cumulative update, with its Download button](docs/images/06-catalog-pick-line.png)
+
+#### 4. Download
+
+1. Click **Download** on that line. A small window opens.
+2. Click the `.msu` link(s) in that window.
+   - **If there is more than one `.msu` file listed, download all of them.** Since Windows 11 24H2, updates can need an older "checkpoint" update next to them (in 2026: KB5043080). Because the deployment adds languages, the checkpoint can never be skipped: DISM then fails with `0x80073712`.
+
+   ![Download window listing two .msu files: the update (1) and the checkpoint KB5043080 (2)](docs/images/07-catalog-download-window.png)
+
+3. Save the file(s) to this folder (this is an example):
+   ```
+   C:\Updates\25H2
+   ```
+   **Each month, first delete last month's `.msu` files from it.** The build script copies every `.msu` in this folder to the stick, so it must contain only this month's file(s).
+
+#### 5. Check the file
+
+The file name should look like this (x64 is the default and correct for all our devices):
+
+```
+windows11.0-kb5xxxxxx-x64_<long code>.msu
+```
+
+If it says `arm64` instead of `x64`, you downloaded the wrong one. With a checkpoint, the folder holds two files:
+
+![C:\Updates\25H2 containing the update and the checkpoint .msu](docs/images/08-updates-folder.png)
 
 ### Step 4.5 - Plug in ONE USB stick
 
@@ -139,7 +217,9 @@ Follow [section 5](#5-monthly-download-the-cumulative-update-msu) and save **all
 .\Initialize-OSDCloudBuild.ps1 -WhatIf
 ```
 
-Read the output. Lines starting with `What if:` show what the real run would do.
+Read the output. Lines starting with `What if:` show what the real run would do. `SKIP` means that part is already done. A block of `What if: Performing the operation "Set Alias" ... Get-CimInstance` lines in step 1 is normal: Windows loads a standard module and reports its aliases.
+
+![Dry run: pre-flight checks OK, ADK and WinPE add-on skipped because they are already installed](docs/images/04-whatif-dry-run.png)
 
 ### Step 4.7 - Real run
 
@@ -169,84 +249,26 @@ You are done when the output ends with:
 === [..:..:..] Done
 ```
 
+![End of a real run: step 9 copies all files to the stick, then Done](docs/images/09-real-run.png)
+
 ### Step 4.8 - If the script stops with an error
 
 - Read the red `FAILED:` line.
-- Fix the problem (see [Troubleshooting](#9-troubleshooting)).
+- Fix the problem (see [Troubleshooting](#8-troubleshooting)).
 - Run the **same command again**. Steps that already finished are skipped automatically.
+- If you used `-RecreateUsb` and the stick was already created, leave `-RecreateUsb` out when you run it again. Otherwise the stick is erased again.
 
 ---
 
-## 5. Monthly: download the cumulative update (.msu)
+## 5. OPTIONAL - Monthly: put the update on the stick
 
-Microsoft releases a new cumulative update on the **second Tuesday of every month** ("Patch Tuesday"). The update on the stick is **required**: put the new one on the stick each month.
+> **Optional, but recommended.** A stick with an older update still deploys fine. The risk: OSDCloud downloads the newest Windows image, and when that image already contains the update on the stick (or a newer one), the update is skipped and the Dutch/French language packs may stay partly English until the next update from Windows Update. The build script warns when the update on the stick is older than 5 weeks.
 
-> **Why it is required:** the deployment adds Dutch and/or French to Windows. Microsoft requires the cumulative update to be installed again after adding languages; without it the language packs stay at their original version (10.0.26100.1) and parts of Windows can stay in English. Windows Update does not fix it, because it never offers an update that is already installed. Only needed when languages are added: "English only" in the menu does not use it.
->
-> **What happens if it is missing:** the deployment stops at the pre-flight check, before anything is erased.
->
-> **What happens if it is older than the Windows image:** OSDCloud downloads the newest Windows image it knows. If that image already contains a newer update than the stick, the update on the stick is skipped with a yellow warning ("not applicable") and the language packs may not be updated. Keep the stick current to avoid this.
+Do this after Patch Tuesday (second Tuesday of the month):
 
-> **Known issue, October 2026:** the checkpoint `KB5043080` fails with `0x80070228`, in WinPE and in Windows itself. It brings its own update component from 2024 (`UpdateAgent Build version 10.0.26100.1742` in `dism.log`), which cannot read the current 25H2 format (`XML parse error ... Type="UUPProduct"`). The October update `KB5127648` itself still installs and does update the language packs (tested: nl-NL and fr-FR at 10.0.26100.9711). The deployment therefore shows a yellow warning and then checks the language pack versions ("Checking the language pack versions"): `OK` there means the languages are fine. Keep both files on the stick anyway, as Microsoft prescribes.
-
-> **Example - October 2026:** the update is **KB5127648** and the download window lists **two** files: `windows11.0-kb5043080-x64_...msu` (the checkpoint) and `windows11.0-kb5127648-x64_...msu`. Both must be on the stick. With only the second one, the deployment fails with `0x80073712`.
-
-### Step 5.1 - Open the Microsoft Update Catalog
-
-Go to <https://www.catalog.update.microsoft.com>
-
-### Step 5.2 - Search
-
-Type exactly this in the search box and press Enter:
-
-```
-Cumulative Update for Windows 11 Version 25H2 for x64-based Systems
-```
-
-### Step 5.3 - Pick the right line
-
-Click the **Last Updated** column header so the newest is at the top. Choose the newest line that matches **all** of these:
-
-| Must contain | Must NOT contain |
-|---|---|
-| `Cumulative Update for Windows 11 Version 25H2` | `Preview` |
-| `x64-based Systems` | `arm64` |
-| | `.NET Framework` |
-| | `Dynamic Update` |
-| | `Server` |
-
-Example of a correct title (the date and KB number change every month):
-
-```
-2026-10 Cumulative Update for Windows 11 Version 25H2 for x64-based Systems (KB5xxxxxx)
-```
-
-### Step 5.4 - Download
-
-1. Click **Download** on that line. A small window opens.
-2. Click the `.msu` link(s) in that window.
-   - **If there is more than one `.msu` file listed, download all of them.** Since Windows 11 24H2, updates can need an older "checkpoint" update next to them (in 2026: KB5043080). Because the deployment adds languages, the checkpoint can never be skipped: DISM then fails with `0x80073712`.
-3. Save the file(s) to a **new, empty folder** for this month, for example:
-   ```
-   C:\Updates\2026-11
-   ```
-   Do not mix files from different months in one folder.
-
-### Step 5.5 - Check the file
-
-The file name should look like this (x64 is the default and correct for all our devices):
-
-```
-windows11.0-kb5xxxxxx-x64_<long code>.msu
-```
-
-If it says `arm64` instead of `x64`, you downloaded the wrong one.
-
----
-
-## 6. Monthly: put the update on the stick
-
-Choose **one** of the two options.
+1. Delete last month's `.msu` files from `C:\Updates\25H2`.
+2. Download this month's update to that folder, as in [step 4.4](#step-44---download-the-cumulative-update-required).
+3. Put it on the stick. Choose **one** of the two options below.
 
 ### Option A - With the script (recommended)
 
@@ -259,7 +281,7 @@ Works on **any Windows 11 PC** with the repo cloned: no previous build, ADK or W
    ```powershell
    cd C:\Git\mw-osdeployment-osdcloud
    Set-ExecutionPolicy RemoteSigned -Scope Process
-   .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\2026-11'
+   .\Initialize-OSDCloudBuild.ps1 -StickOnly -LcuPath 'C:\Updates\25H2'
    ```
 5. Steps 2 to 7 are skipped. Step 8 replaces the old update with the new one (a few minutes for ~5 GB on a slow stick), step 9 refreshes everything else.
 6. Wait for `=== Done`, then use **Safely Remove Hardware**.
@@ -278,7 +300,7 @@ Use this if the script is not available or you only want to swap the file.
    OSDCloudUSB:\OSDCloud\Languages\LCU
    ```
 4. **Delete** the old `.msu` file(s) in that folder.
-5. **Copy** the new `.msu` file(s) from `C:\Updates\2026-11` into that folder.
+5. **Copy** the new `.msu` file(s) from `C:\Updates\25H2` into that folder.
 6. Wait until the copy is completely finished, then use **Safely Remove Hardware** before unplugging.
 
 The `LCU` folder must contain **only this month's** `.msu` file(s) and nothing else.
@@ -288,7 +310,7 @@ The `LCU` folder must contain **only this month's** `.msu` file(s) and nothing e
 ```
 WinPE (small partition)        <- boot files, do not touch
 OSDCloudUSB (data partition)
-├── Collect-DeploymentLogs.ps1 <- run on a deployed device to collect logs (section 10)
+├── Collect-DeploymentLogs.ps1 <- run on a deployed device to collect logs (section 9)
 ├── Logs                       <- created by Collect-DeploymentLogs.ps1
 └── OSDCloud
     ├── Languages
@@ -306,20 +328,20 @@ OSDCloudUSB (data partition)
 
 ---
 
-## 7. Deploying a device
+## 6. Deploying a device
 
 > **WARNING - a deployment erases the device's disk.** The menu asks you to type `YES` first. Make sure you have the right device and that any data on it is backed up.
 
 **In short:** boot from the stick > the menu appears > (Wi-Fi: **C**) > **D** or **N** > choose the languages > check the device > type **YES** > wait until the device restarts by itself > OOBE.
 
-### Step 7.1 - Before you start
+### Step 6.1 - Before you start
 
-- The stick is up to date: deployment script, Office files, debloat script and **this month's cumulative update** (section 5-6). Not sure? Rebuild it with `Initialize-OSDCloudBuild.ps1` (step 9 takes seconds).
-- The device is connected to **power**. Use **Ethernet** if you can; Wi-Fi works too (step 7.4).
+- The stick is up to date: deployment script, Office files, debloat script and **this month's cumulative update** (step 4.4 and step 4.4). Not sure? Rebuild it with `Initialize-OSDCloudBuild.ps1` (step 9 takes seconds).
+- The device is connected to **power**. Use **Ethernet** if you can; Wi-Fi works too (step 6.4).
 - Any data on the device is backed up: everything on the internal disk is erased.
-- **Autopilot devices:** the Autopilot deployment profile has **Language (Region)** = **User select**, otherwise OOBE skips the language choice (step 7.8).
+- **Autopilot devices:** the Autopilot deployment profile has **Language (Region)** = **User select**, otherwise OOBE skips the language choice (step 6.6).
 
-### Step 7.2 - Boot from the stick
+### Step 6.2 - Boot from the stick
 
 1. Plug in the stick.
 2. Turn on the device and open the **boot menu**. Common keys:
@@ -331,11 +353,13 @@ OSDCloudUSB (data partition)
    | Lenovo | F12 (or the small Novo button) |
    | Microsoft Surface | Hold **Volume Down**, press and release Power, keep holding Volume Down until the logo appears |
 
-3. Choose the **USB** entry (UEFI).
+3. Choose the **USB** entry (UEFI), not Windows Boot Manager or the internal disk.
+
+   ![HP boot menu (F9) with the UEFI USB stick selected](docs/images/10-boot-menu-f9.jpg)
 
 If the device does not boot from the stick, check in the firmware (BIOS) settings that USB boot is allowed. Leave Secure Boot **on**.
 
-### Step 7.3 - The deployment menu
+### Step 6.3 - The deployment menu
 
 After WinPE has started (about a minute), the **deployment menu** appears by itself:
 
@@ -362,20 +386,22 @@ After WinPE has started (about a minute), the **deployment menu** appears by its
   Choice:
 ```
 
+![The deployment menu on a device without a network connection](docs/images/11-menu-not-connected.jpg)
+
 **How to use it:** type the letter and press **Enter**. Upper or lower case does not matter. The menu only uses letters that are in the same place on US (QWERTY) and Belgian (AZERTY) keyboards, so it works on every stick. The menu waits as long as needed: if a device boots from the stick by accident, nothing happens until someone types `YES`.
 
 | Key | What it does | When to use it |
 |---|---|---|
-| **D** | Deploy Windows 11 + debloat + **Microsoft 365 Apps** | Normal case: customers with Microsoft 365 Apps licences (step 7.5) |
-| **N** | Deploy Windows 11 + debloat, **without Office** | Customers without Microsoft 365 Apps licences (step 7.5) |
-| **C** | Opens the Wi-Fi window to connect to a wireless network | No Ethernet (step 7.4) |
+| **D** | Deploy Windows 11 + debloat + **Microsoft 365 Apps** | Normal case: customers with Microsoft 365 Apps licences (step 6.5) |
+| **N** | Deploy Windows 11 + debloat, **without Office** | Customers without Microsoft 365 Apps licences (step 6.5) |
+| **C** | Opens the Wi-Fi window to connect to a wireless network | No Ethernet (step 6.4) |
 | **R** | Checks the internet connection again and updates the `Internet:` line | Ethernet just plugged in, or `NOT connected` while you expect a connection |
-| **P** | Opens an **extra PowerShell window** | Reading logs while a deployment runs, or troubleshooting (step 7.6) |
-| **X** | Leaves the menu; nothing is changed | Deploying manually (step 7.10) or just looking around. The normal OSDCloud windows (Wi-Fi prompt, info) then appear |
+| **P** | Opens an **extra PowerShell window** | Reading logs while a deployment runs, or troubleshooting (step 6.7) |
+| **X** | Leaves the menu; nothing is changed | Deploying manually (step 6.10) or just looking around. The normal OSDCloud windows (Wi-Fi prompt, info) then appear |
 
 > **Extra window at startup:** while the menu (or a deployment) runs, OSDCloud's other windows do not open. The menu therefore also starts one extra PowerShell window, **minimized**: a small title bar at the bottom left of the screen. Click it to open it. **P** opens another one.
 
-### Step 7.4 - Connect to the internet (C and R)
+### Step 6.4 - Connect to the internet (C and R)
 
 The deployment needs internet (Windows, Office and updates are downloaded from Microsoft). Check the `Internet:` line in the menu.
 
@@ -385,16 +411,25 @@ The deployment needs internet (Windows, Office and updates are downloaded from M
 
 1. Press **C**. A separate window opens and shows a table of the Wi-Fi networks it finds (`Signal`, `Index`, `SSID`, ...).
 2. Type the **Index** number of your network and press Enter. On a Belgian (AZERTY) keyboard the number keys need **Shift**, or use the numeric keypad.
-3. Type the Wi-Fi password when asked and press Enter. WinPE uses the **Belgian (Period)** keyboard, so type it as on a normal Belgian keyboard.
+
+   ![Wi-Fi network list with the Index column (network names blurred)](docs/images/12-wifi-network-list.jpg)
+
+3. A **Windows PowerShell credential request** window asks for the password. The user name is already filled in with the network name. Type the Wi-Fi password and click **OK**. WinPE uses the **Belgian (Period)** keyboard, so type it as on a normal Belgian keyboard.
+
+   ![Password window for the selected Wi-Fi network (network name blurred)](docs/images/13-wifi-password.jpg)
+
 4. The window waits for the connection and closes. The menu checks the internet again: the line should now say `Internet: connected`. If not, press **R** after a few seconds, or **C** to try again.
 
 > **Which network?** Use a **dedicated deployment or guest network** if possible, but one **without a login page** (captive portal): those block the deployment. The Wi-Fi profile is copied to the new Windows so it can connect during setup, OOBE and Autopilot. OSDCloud also writes the password **in plain text** into `C:\Windows\Setup\Scripts\SetupComplete.ps1`; the deployment removes it from there (and from the OSDCloud logs) as the last step before OOBE. The Wi-Fi profile itself stays on the device (Windows stores its key protected); remove it afterwards if the device should not keep that network: `netsh wlan delete profile name="<network name>"`.
 
-> **Old stick with a US keyboard?** Sticks built before build script version 1.2.0 use the US (QWERTY) keyboard in WinPE, so the password does not match what you type. Press **X**, then switch the keyboard and open a new window (the change only applies to programs started afterwards): `wpeutil SetKeyboardLayout 0813:00000813` and `start powershell`. Run `Start-WinREWiFi` in the new window and deploy manually (step 7.10). Better: rebuild the stick with `-RebuildWinPE` (section 11).
+> **Old stick with a US keyboard?** Sticks built before build script version 1.2.0 use the US (QWERTY) keyboard in WinPE, so the password does not match what you type. Press **X**, then switch the keyboard and open a new window (the change only applies to programs started afterwards): `wpeutil SetKeyboardLayout 0813:00000813` and `start powershell`. Run `Start-WinREWiFi` in the new window and deploy manually (step 6.10). Better: rebuild the stick with `-RebuildWinPE` (section 10).
 
-### Step 7.5 - Start the deployment (D or N)
+### Step 6.5 - Start the deployment (D or N)
 
-1. Press **D** (with Office) or **N** (without Office).
+1. Check that the menu says `Internet: connected`, then press **D** (with Office) or **N** (without Office).
+
+   ![Menu with Internet: connected and D typed](docs/images/14-menu-connected-deploy.jpg)
+
 2. **Choose the display languages.** English is always included:
 
    ```
@@ -406,13 +441,17 @@ The deployment needs internet (Windows, Office and updates are downloaded from M
    ```
 
    Only the languages you choose here are offered in OOBE. Each extra language adds a few minutes. With **E** the cumulative update from the stick is not used either (Windows Update updates the device during setup).
+
+   ![Language question after pressing D, with B typed](docs/images/15-language-choice.jpg)
 3. **Pre-flight checks** (nothing is changed yet). The menu runs the deployment script in test mode and shows the result. Every line should say `OK`:
    - `Internet: dl.delivery.mp.microsoft.com:80 reachable` (Windows) and `officecdn.microsoft.com:443` (Office, only with **D**)
    - the language packs and the cumulative update (`LCU found`) for the chosen languages
    - the debloat script and (with **D**) the Office files on the stick
 
-   A yellow warning "Only one .msu in the LCU folder" means the checkpoint update may be missing (section 5). If a check **fails**, the menu says so and you go back to the menu: nothing was changed.
+   A yellow warning "Only one .msu in the LCU folder" means the checkpoint update may be missing (step 4.4). If a check **fails**, the menu says so and you go back to the menu: nothing was changed.
 4. **Confirm.** The device, its internal disk(s) and what will be installed are shown in red, for example `Install: Windows 11 + debloat + Microsoft 365 Apps, languages: English, nl-NL, fr-FR`. Check that this is the right device, then type **`YES`** and press Enter. Anything else cancels.
+
+   ![Pre-flight summary and the red confirmation, with YES typed](docs/images/16-final-confirmation.jpg)
 5. The deployment starts. **Do not unplug the stick and do not turn off the device** until it restarts by itself. What you see, in order (the `HH:mm:ss` times are on screen):
 
    | Step | Takes | Notes |
@@ -421,14 +460,39 @@ The deployment needs internet (Windows, Office and updates are downloaded from M
    | Injecting Ethernet/Wi-Fi drivers | seconds | `OK  <network adapter>` |
    | Holding feature updates at 25H2 | seconds | Prevents 26H2 during setup, lifted again before OOBE |
    | Adding language nl-NL / fr-FR | 1-2 min per language | Only the chosen languages |
-   | Re-applying the cumulative update | 5-20 min | **October 2026:** a yellow warning about `kb5043080` / `0x80070228` is a known issue and normal (section 5) |
+   | Re-applying the cumulative update | 5-20 min | **October 2026:** a yellow warning about `kb5043080` / `0x80070228` is a known issue and normal (step 4.4) |
    | Checking the language pack versions | seconds | Must say `OK  nl-NL language pack at 10.0.26100.<build>` per language |
    | Staging debloat / Office / feature update hold / Wi-Fi password removal | 1 min | Prepares what runs after the restart |
    | Verifying installed languages | seconds | |
 
-   The device then restarts by itself after 10 seconds. Continue with step 7.8.
+   The device then restarts by itself after 10 seconds. Continue with step 6.6.
 
-### Step 7.6 - While it runs: the extra PowerShell window (P)
+### Step 6.6 - After the restart (SetupComplete and OOBE)
+
+1. The device shows "Getting ready" and "Just a moment..." for a while. In the background (nothing of this is visible on screen, the logs are in section 9), in this order:
+   1. Windows Update installs drivers, firmware and updates
+   2. the debloat runs
+   3. Microsoft 365 Apps are downloaded and installed (with **D**)
+   4. the feature update hold is lifted
+   5. the plain-text Wi-Fi password OSDCloud left behind is removed
+
+   **This can take 30 to 75 minutes.** Do not turn it off. It may restart once more by itself.
+
+   ![Just a moment... while drivers, updates, debloat and Office are installed](docs/images/17-just-a-moment.jpg)
+
+2. OOBE starts:
+   1. **Choose a language** - English, Nederlands or Français (only the languages chosen in the menu)
+
+      ![OOBE language page offering English, francais and Nederlands](docs/images/18-oobe-language.jpg)
+
+   2. **Choose a region** - for example Belgium. There are no separate Belgian language packs: the region sets the Belgian date, number and currency formats.
+   3. **Choose a keyboard layout** - Belgian (Period) or Belgian French
+   4. Optionally add a second keyboard
+
+   > **No language choice, only the keyboard?** Then the device is registered in **Autopilot** and its deployment profile has **Language (Region)** set to "Operating system default" (or a fixed language). OOBE then skips the language page (Microsoft Learn, Autopilot "Validation": *"If connected to Ethernet, and the Windows Autopilot profile is configured to skip them, the following pages aren't displayed: Language and locale"*). Fix it in Intune: **Devices > Windows > Enrollment > Deployment profiles** > the profile > **Out-of-box experience (OOBE)** > **Language (Region)** = **User select**. `Collect-DeploymentLogs.ps1` reports the profile's language setting.
+3. Finish the setup as usual (Autopilot / company sign-in).
+
+### Step 6.7 - OPTIONAL - While it runs: the extra PowerShell window (P)
 
 Use the extra window (click the title bar at the bottom left, or press **P** in the menu before you start) to look at a busy deployment without disturbing it. Useful commands:
 
@@ -445,7 +509,7 @@ Get-Volume | Where-Object FileSystemLabel -eq 'OSDCloudUSB'
 
 Do not run deployment or DISM commands yourself while a deployment is busy: two DISM jobs on the same Windows get in each other's way.
 
-### Step 7.7 - If the deployment fails
+### Step 6.8 - OPTIONAL - If the deployment fails
 
 - The device does **not** restart. You see a red `DEPLOYMENT FAILED: ...` line, followed by the **last 25 lines of the deployment log**, and the menu waits for Enter.
 - **Do not restart yet:** the log is only kept in WinPE memory until it restarts. Take a photo of the screen, or save the logs to the stick from the extra window (replace `E` with the stick's letter):
@@ -454,30 +518,11 @@ Do not run deployment or DISM commands yourself while a deployment is busy: two 
   New-Item E:\Logs\WinPE -ItemType Directory -Force | Out-Null
   Copy-Item X:\Windows\Temp\Deploy-OSDCloud-Win11-25H2_*.log, X:\Windows\Logs\DISM\dism.log E:\Logs\WinPE\
   ```
-- Fix the cause (see section 9) and press **D** or **N** again. The menu finds the stick again even if its drive letter changed.
+- Fix the cause (see section 8) and press **D** or **N** again. The menu finds the stick again even if its drive letter changed.
 
-### Step 7.8 - After the restart (SetupComplete and OOBE)
+### Step 6.9 - OPTIONAL - Check the device
 
-1. The device shows "Getting ready" for a while. In the background (nothing of this is visible on screen, the logs are in section 10), in this order:
-   1. Windows Update installs drivers, firmware and updates
-   2. the debloat runs
-   3. Microsoft 365 Apps are downloaded and installed (with **D**)
-   4. the feature update hold is lifted
-   5. the plain-text Wi-Fi password OSDCloud left behind is removed
-
-   **This can take 30 to 75 minutes.** Do not turn it off. It may restart once more by itself.
-2. OOBE starts:
-   1. **Choose a language** - English, Nederlands or Français (only the languages chosen in the menu)
-   2. **Choose a region** - for example Belgium. There are no separate Belgian language packs: the region sets the Belgian date, number and currency formats.
-   3. **Choose a keyboard layout** - Belgian (Period) or Belgian French
-   4. Optionally add a second keyboard
-
-   > **No language choice, only the keyboard?** Then the device is registered in **Autopilot** and its deployment profile has **Language (Region)** set to "Operating system default" (or a fixed language). OOBE then skips the language page (Microsoft Learn, Autopilot "Validation": *"If connected to Ethernet, and the Windows Autopilot profile is configured to skip them, the following pages aren't displayed: Language and locale"*). Fix it in Intune: **Devices > Windows > Enrollment > Deployment profiles** > the profile > **Out-of-box experience (OOBE)** > **Language (Region)** = **User select**. `Collect-DeploymentLogs.ps1` reports the profile's language setting.
-3. Finish the setup as usual (Autopilot / company sign-in).
-
-### Step 7.9 - Check the device
-
-**Recommended for test devices and when something looks wrong:** after signing in, plug in the stick, open **PowerShell as administrator** and run `PowerShell -ExecutionPolicy Bypass -File E:\Collect-DeploymentLogs.ps1` (replace `E`). It collects all logs to the stick and shows OK / WARN / FAIL per check (section 10).
+**Recommended for test devices and when something looks wrong:** after signing in, plug in the stick, open **PowerShell as administrator** and run `PowerShell -ExecutionPolicy Bypass -File E:\Collect-DeploymentLogs.ps1` (replace `E`). It collects all logs to the stick and shows OK / WARN / FAIL per check (section 9).
 
 By hand:
 
@@ -485,9 +530,9 @@ By hand:
 - **Device Manager**: no yellow exclamation marks. If there are, run Windows Update again and restart.
 - **Settings > System > Activation**: should show "Windows is activated" (if the device has a Pro key in its firmware).
 - **Debloat**: no Xbox, Solitaire or Copilot in the Start menu, which starts without the default pins. If they are still there, see `C:\ProgramData\Debloat\Debloat.log`.
-- **Office**: Word, Excel, Outlook and PowerPoint are there (unless you chose **N**). If not, see the Office log in section 10. A failed Office install does not stop the deployment.
+- **Office**: Word, Excel, Outlook and PowerPoint are there (unless you chose **N**). If not, see the Office log in section 9. A failed Office install does not stop the deployment.
 
-### Step 7.10 - Without the menu (manual)
+### Step 6.10 - OPTIONAL - Without the menu (manual)
 
 Only needed if you left the menu with **X**, or on a stick built before build script version 1.3.0 (no menu).
 
@@ -506,7 +551,7 @@ Only needed if you left the menu with **X**, or on a stick built before build sc
 
 ---
 
-## 8. What happens during a deployment
+## 7. What happens during a deployment
 
 For the curious - you do not need to know this to use it.
 
@@ -514,42 +559,43 @@ For the curious - you do not need to know this to use it.
 1. **Pre-flight checks** - checks it runs in WinPE, the device has internet (Microsoft's Windows and Office download servers are reachable) and the language and Office files are on the stick, **before** anything is erased. This matters because OSDCloud erases the disk first and only then downloads Windows.
 2. **OSDCloud** - erases the disk, downloads Windows 11 25H2 Pro (en-US) from Microsoft and applies it. No driver packs.
 3. **Network drivers** - copies the Ethernet/Wi-Fi drivers WinPE is using into the new Windows, so it has internet at first boot.
-4. **Languages** - adds the language packs and language features chosen in the menu (nl-NL and/or fr-FR). With more than one language installed, OOBE shows the language choice (unless an Autopilot profile sets the language, see [step 7.8](#step-78---after-the-restart-setupcomplete-and-oobe)).
+4. **Languages** - adds the language packs and language features chosen in the menu (nl-NL and/or fr-FR). With more than one language installed, OOBE shows the language choice (unless an Autopilot profile sets the language, see [step 6.6](#step-66---after-the-restart-setupcomplete-and-oobe)).
 3b. **Feature update hold** - writes the Windows Update policy "Select the target feature update version" (Windows 11, 25H2) into the new Windows, so Windows Update during setup does not install 26H2. It is removed again at the end of setup (step 7), because a local policy would overrule the customer's Intune feature update policy.
-5. **Cumulative update** - only when languages were added: applied again after the languages (update and checkpoint together). Microsoft requires this, otherwise the language packs stay at their original version. Windows Update would not do it, because it does not offer an update that is already installed. A failure (for example the checkpoint in October 2026, see section 5) is a warning; afterwards the deployment checks that each added language pack was updated past its original version.
+5. **Cumulative update** - only when languages were added: applied again after the languages (update and checkpoint together). Microsoft requires this, otherwise the language packs stay at their original version. Windows Update would not do it, because it does not offer an update that is already installed. A failure (for example the checkpoint in October 2026, see step 4.4) is a warning; afterwards the deployment checks that each added language pack was updated past its original version.
 6. **Debloat and Office staged** - copies `RemoveBloat.ps1` to `C:\OSDCloud\Scripts\SetupComplete\Debloat` and the Office files to `...\SetupComplete\Office`, and creates a `SetupComplete.cmd` that starts them: debloat first, then Office. Both need the full Windows, so they cannot run in WinPE. Debloat must run first because it removes consumer Office editions.
 7. **Restart** - in the new Windows, SetupComplete runs before OOBE: Windows Update installs the remaining drivers, firmware and updates, then OSDCloud runs our `SetupComplete.cmd`: the debloat runs, Microsoft 365 Apps are downloaded from Microsoft and installed, the feature update hold is lifted, and as the very last step the plain-text Wi-Fi password OSDCloud left behind is removed. A failure of one step does not stop the others. Then the device restarts into OOBE.
 
 ---
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 | Problem | Cause | Fix |
 |---|---|---|
-| `Security warning ... Do you want to run ...?` | Files downloaded from the internet are blocked | `Get-ChildItem -Recurse -File \| Unblock-File` in the repo folder |
+| `Security warning ... Do you want to run ...?` | Files downloaded from the internet are blocked | `Get-ChildItem -Recurse -File \| Unblock-File` in the repo folder ([step 4.3](#step-43---allow-the-scripts-to-run)) |
+| `... cannot be loaded. The file ... is not digitally signed` | Same: the repo was copied from Teams, OneDrive, e-mail or a ZIP, so the files are marked as downloaded | `Get-ChildItem -Recurse -File \| Unblock-File` in the repo folder, then run the same command again |
 | `... cannot be loaded because running scripts is disabled` | Execution policy | `Set-ExecutionPolicy RemoteSigned -Scope Process` |
 | `#Requires ... Desktop` error | You opened PowerShell 7 | Use **Windows PowerShell** (5.1), see [step 4.2](#step-42---open-the-right-powershell) |
 | `More than one OSDCloudUSB stick connected` | Two OSDCloud sticks plugged in | Unplug one, run again |
 | `Windows Recovery Environment is not available` | WinRE disabled on your PC | Run `reagentc /enable` as administrator, run again |
 | `New-OSDCloudTemplate could not add ... WinPE package(s)` / error `0xd0000043` | Files locked, usually by antivirus/EDR | Clean up (below), add exclusions or use a build VM, then run with `-RebuildWinPE` |
 | Step 8 seems frozen | Large copy to USB, no progress bar | Normal. Check write speed in Task Manager. Wait. |
-| `No cumulative update on the stick yet` (build) or `No cumulative update (.msu) found` (deployment pre-flight) | `LCU` folder empty | Required: follow [section 5](#5-monthly-download-the-cumulative-update-msu) and [section 6](#6-monthly-put-the-update-on-the-stick). Nothing was erased |
+| `No cumulative update on the stick yet` (build) or `No cumulative update (.msu) found` (deployment pre-flight) | `LCU` folder empty | Required: follow [step 4.4](#step-44---download-the-cumulative-update-required) and [section 5](#5-optional---monthly-put-the-update-on-the-stick). Nothing was erased |
 | `The cumulative update on the stick is older than 5 weeks` | You skipped a month | Download the new update and put it on the stick, otherwise the next Windows image may be newer and the language packs may not be updated |
-| Deployment fails at "Re-applying the cumulative update" with `0x80073712` ("An error occurred applying the Unattend.xml file from the .msu package") | The checkpoint `.msu` is missing in the `LCU` folder | Download **all** files from the Update Catalog download window (section 5) and put them in the `LCU` folder |
-| Yellow warning `Part of the cumulative update failed (0x80070228)` | The checkpoint `KB5043080` brings a 2024 update component that cannot read the 25H2 format (`dism.log`: `XML parse error ... Type="UUPProduct"`). Known issue, see section 5 | Nothing to do if the next step "Checking the language pack versions" says `OK` for each language. The DISM log is saved as `C:\OSDCloud\Logs\dism-offline-LCU.log` |
-| Yellow warning `... language pack is still at its original version` | The cumulative update did not update the language pack | Check the update files on the stick (section 5) and redeploy |
-| OOBE offers no language choice, only the keyboard | Autopilot profile has **Language (Region)** = "Operating system default" or a fixed language | Intune deployment profile: **Language (Region)** = **User select** ([step 7.8](#step-78---after-the-restart-setupcomplete-and-oobe)). Not caused by the deployment: `dism /online /get-intl` listing nl-NL/fr-FR as "Partially localized, MUI type" is normal for added languages |
+| Deployment fails at "Re-applying the cumulative update" with `0x80073712` ("An error occurred applying the Unattend.xml file from the .msu package") | The checkpoint `.msu` is missing in the `LCU` folder | Download **all** files from the Update Catalog download window (step 4.4) and put them in the `LCU` folder |
+| Yellow warning `Part of the cumulative update failed (0x80070228)` | The checkpoint `KB5043080` brings a 2024 update component that cannot read the 25H2 format (`dism.log`: `XML parse error ... Type="UUPProduct"`). Known issue, see step 4.4 | Nothing to do if the next step "Checking the language pack versions" says `OK` for each language. The DISM log is saved as `C:\OSDCloud\Logs\dism-offline-LCU.log` |
+| Yellow warning `... language pack is still at its original version` | The cumulative update did not update the language pack | Check the update files on the stick (step 4.4) and redeploy |
+| OOBE offers no language choice, only the keyboard | Autopilot profile has **Language (Region)** = "Operating system default" or a fixed language | Intune deployment profile: **Language (Region)** = **User select** ([step 6.6](#step-66---after-the-restart-setupcomplete-and-oobe)). Not caused by the deployment: `dism /online /get-intl` listing nl-NL/fr-FR as "Partially localized, MUI type" is normal for added languages |
 | `The cumulative update on the stick is older than the one already in the Windows image (not applicable)` (deployment warning) | The update on the stick is older than the one inside the downloaded Windows image | The deployment continues. Put the latest update on the stick for the next devices |
 | `Language repository ... not found on any drive` (deployment) | Stick not detected or language files missing | Check the stick is plugged in. Rebuild with `.\Initialize-OSDCloudBuild.ps1 -RefreshLanguages` |
 | `No third-party network drivers in use in WinPE` (warning) | Device uses a network chip Windows already supports (normal on VMs) | Nothing to do |
 | No language choice in OOBE | Language packs missing | Check the deployment log for errors in step "Adding language" |
-| Wi-Fi password is not accepted in WinPE | Wrong keyboard layout: the stick still has a US (QWERTY) WinPE | Use `wpeutil SetKeyboardLayout 0813:00000813` (see [step 7.4](#step-74---connect-to-the-internet-c-and-r)), or rebuild the stick with `-RebuildWinPE` |
-| The deployment menu does not appear | The stick was built before build script version 1.3.0 | Deploy manually ([step 7.10](#step-710---without-the-menu-manual)), and run `.\Initialize-OSDCloudBuild.ps1` again to put the menu on the stick (step 9, takes seconds) |
+| Wi-Fi password is not accepted in WinPE | Wrong keyboard layout: the stick still has a US (QWERTY) WinPE | Use `wpeutil SetKeyboardLayout 0813:00000813` (see [step 6.4](#step-64---connect-to-the-internet-c-and-r)), or rebuild the stick with `-RebuildWinPE` |
+| The deployment menu does not appear | The stick was built before build script version 1.3.0 | Deploy manually ([step 6.10](#step-610---optional---without-the-menu-manual)), and run `.\Initialize-OSDCloudBuild.ps1` again to put the menu on the stick (step 9, takes seconds) |
 | `No internet: cannot reach ...` (deployment pre-flight) | No network in WinPE, no Wi-Fi driver, or a network that blocks the download (for example a guest network with a login page) | Nothing was erased. Connect Ethernet, or Wi-Fi with **C** in the menu, and choose **D** or **N** again |
 | `Debloat script not found` (deployment pre-flight) | Stick was built before debloat was added (build script before 1.4.0) | Run `.\Initialize-OSDCloudBuild.ps1` again (step 9 downloads and copies it, takes seconds) |
-| `RemoveBloat.ps1 does not match the expected SHA-256` (build) | The download is not the version we checked, or the download was corrupted | Run the build again. If it keeps failing, the pinned values in `Initialize-OSDCloudBuild.ps1` are wrong; see [section 11](#11-changing-the-scripts) |
+| `RemoveBloat.ps1 does not match the expected SHA-256` (build) | The download is not the version we checked, or the download was corrupted | Run the build again. If it keeps failing, the pinned values in `Initialize-OSDCloudBuild.ps1` are wrong; see [section 10](#10-changing-the-scripts) |
 | `Office file not found` (deployment pre-flight) | Stick was built before Office was added | Run `.\Initialize-OSDCloudBuild.ps1` again (step 9 copies the Office folder), or deploy with `-SkipOffice` |
-| Office missing after OOBE | No internet during SetupComplete, or setup.exe failed | Check the Office logs ([section 10](#10-log-files)). Retry as administrator: `powershell.exe -ExecutionPolicy Bypass -File C:\OSDCloud\Scripts\SetupComplete\Office\Install-M365Apps.ps1` |
+| Office missing after OOBE | No internet during SetupComplete, or setup.exe failed | Check the Office logs ([section 9](#9-log-files)). Retry as administrator: `powershell.exe -ExecutionPolicy Bypass -File C:\OSDCloud\Scripts\SetupComplete\Office\Install-M365Apps.ps1` |
 | Files disappeared from the stick | They were on the **WinPE** partition, which is mirrored on update | Only store files on the **OSDCloudUSB** partition |
 
 **Clean up after a failed WinPE build** (run as administrator):
@@ -562,7 +608,7 @@ Clear-WindowsCorruptMountPoint
 **Rebuild everything from scratch:**
 
 ```powershell
-.\Initialize-OSDCloudBuild.ps1 -RebuildWinPE -RecreateUsb -RefreshLanguages -LcuPath 'C:\Updates\<this month>'
+.\Initialize-OSDCloudBuild.ps1 -RebuildWinPE -RecreateUsb -RefreshLanguages -LcuPath 'C:\Updates\25H2'
 ```
 
 **Useful switches for `Initialize-OSDCloudBuild.ps1`:**
@@ -579,7 +625,7 @@ Clear-WindowsCorruptMountPoint
 
 ---
 
-## 10. Log files
+## 9. Log files
 
 When asking for help, send the relevant log.
 
@@ -609,7 +655,7 @@ Individual logs:
 
 ---
 
-## 11. Changing the scripts
+## 10. Changing the scripts
 
 - **Always edit the scripts in the repo folder**, never directly on the stick. Then run `Initialize-OSDCloudBuild.ps1` again - step 9 copies the new deployment script to the stick.
 - Settings (Windows version, edition, languages) are at the top of `Deploy-OSDCloud-Win11-25H2.ps1` in the `Configuration` section.
@@ -633,7 +679,7 @@ Individual logs:
 
 ---
 
-## 12. No-secrets policy
+## 11. No-secrets policy
 
 This repository must **never** contain:
 
